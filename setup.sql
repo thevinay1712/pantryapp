@@ -1,0 +1,73 @@
+-- setup.sql
+
+-- 1. CLEANUP (Drop in correct order to avoid Foreign Key errors)
+SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS TBL_FOOTFALL;
+DROP TABLE IF EXISTS TBL_RECIPE_INGREDIENTS;
+DROP TABLE IF EXISTS TBL_RECIPE_HEADER;
+DROP TABLE IF EXISTS TBL_PANTRY_STOCK;
+DROP TABLE IF EXISTS TBL_LOGS;
+DROP TABLE IF EXISTS TBL_ITEM_CATALOG;
+DROP TABLE IF EXISTS TBL_VENDOR;
+DROP TABLE IF EXISTS TBL_CHEF_PROFILE;
+SET FOREIGN_KEY_CHECKS = 1;
+
+-- 2. MASTER TABLES
+CREATE TABLE TBL_VENDOR (
+    Vendor_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Vendor_Name VARCHAR(100) NOT NULL,
+    Contact_Number VARCHAR(15),
+    Location VARCHAR(100)
+);
+
+CREATE TABLE TBL_ITEM_CATALOG (
+    Item_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Item_Name VARCHAR(100) NOT NULL UNIQUE, -- Unique constraint prevents duplicates
+    Category VARCHAR(50),
+    Standard_Unit VARCHAR(20) DEFAULT 'units',
+    Shelf_Life_Days INT DEFAULT 7,
+    Last_Vendor VARCHAR(100),
+    Last_Price DECIMAL(10,2)
+);
+
+CREATE TABLE TBL_CHEF_PROFILE (
+    Chef_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Name VARCHAR(100),
+    Specialty VARCHAR(50),
+    Shift_Timing VARCHAR(50)
+);
+
+-- 3. TRANSACTION TABLES
+CREATE TABLE TBL_PANTRY_STOCK (
+    Stock_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Item_ID INT,
+    Current_Quantity DECIMAL(10,3) DEFAULT 0.000,
+    Last_Updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (Item_ID) REFERENCES TBL_ITEM_CATALOG(Item_ID)
+);
+
+CREATE TABLE TBL_FOOTFALL (
+    Footfall_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Log_Date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    Customer_Count INT,
+    Meal_Type VARCHAR(50)
+);
+
+CREATE TABLE TBL_LOGS (
+    Log_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Item_ID INT,
+    Action_Type ENUM('PURCHASE', 'CONSUME', 'WASTE') NOT NULL,
+    Quantity DECIMAL(10,3) NOT NULL,
+    Unit_Price DECIMAL(10,2) DEFAULT 0.00,
+    Vendor_Name VARCHAR(100),
+    Log_Date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (Item_ID) REFERENCES TBL_ITEM_CATALOG(Item_ID)
+);
+
+-- 4. DEFAULT CATALOG DATA (Only Catalog, NOT Stock)
+-- Only inserting catalog definitions. Stock will be 0/empty initially.
+INSERT INTO TBL_ITEM_CATALOG (Item_Name, Category, Standard_Unit, Shelf_Life_Days) VALUES 
+('Milk', 'Dairy', 'Liters', 4),
+('Eggs', 'Dairy', 'Units', 14),
+('Basmati Rice', 'Grains', 'kg', 180),
+('Chicken Breast', 'Meat', 'kg', 3);
