@@ -1,127 +1,556 @@
 import streamlit as st
 import pandas as pd
-from backend_logic import *
-from datetime import date
+import plotly.express as px
+import time
+from datetime import datetime
+from backend_logic import (
+    fetch_data, execute_query, get_db_connection, scan_bill_with_groq, 
+    get_ai_item_details, generate_chef_menu, get_menu_ingredients_for_deduction, 
+    process_smart_deduction, seed_historical_data, get_item_forecast,
+    get_footfall_forecast, log_footfall_transaction
+)
 
-st.set_page_config(page_title="Smart Kitchen OS", layout="wide")
+# --- PAGE CONFIG ---
+st.set_page_config(
+    page_title="Smart Pantry and Kitchen Manager", 
+    layout="wide", 
+    page_icon="🍳",
+    initial_sidebar_state="expanded"
+)
 
-# --- AUTH ---
+# --- CUSTOM CSS & THEME HANDLING ---
+def load_custom_css(is_dark_mode):
+    bg_color = "#0e1117" if is_dark_mode else "#ffffff"
+    card_bg = "#262730" if is_dark_mode else "#f0f2f6"
+    
+    st.markdown(f"""
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap');
+        
+        html, body, [class*="css"] {{
+            font-family: 'Inter', sans-serif;
+        }}
+        
+        h1, h2, h3 {{
+            font-weight: 600;
+            letter-spacing: -0.5px;
+        }}
+        
+        /* Metric Cards Styling */
+        div[data-testid="stMetric"] {{
+            background-color: {card_bg};
+            border-radius: 8px;
+            padding: 15px;
+            border: 1px solid rgba(128, 128, 128, 0.2);
+        }}
+        
+        /* Dataframe Headers */
+        th {{
+            background-color: {card_bg} !important;
+            font-weight: 600 !important;
+        }}
+        
+        /* Navigation Sidebar */
+        section[data-testid="stSidebar"] {{
+            background-color: {card_bg};
+        }}
+        
+        /* Buttons */
+        div.stButton > button:first-child {{
+            border-radius: 6px;
+            font-weight: 500;
+        }}
+        </style>
+    """, unsafe_allow_html=True)
+
+# --- AUTHENTICATION ---
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 
-def login():
-    st.title("Manager Login")
-    c1, c2 = st.columns(2)
-    user = c1.text_input("Username")
-    pwd = c2.text_input("Password", type="password")
-    if st.button("Login"):
-        if user == "admin" and pwd == "admin123":
-            st.session_state.logged_in = True
-            st.rerun()
-        else: st.error("Invalid Credentials")
+def login_screen():
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c2:
+        st.markdown("<br><br><h2 style='text-align: center;'>Smart Pantry and Kitchen Manager</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: grey;'>WE SAVE FOOD</p>", unsafe_allow_html=True)
+        with st.container(border=True):
+            user = st.text_input("Username")
+            pwd = st.text_input("Password", type="password")
+            if st.button("Sign In", type="primary", use_container_width=True):
+                if user == "admin" and pwd == "password123":
+                    st.session_state.logged_in = True
+                    st.rerun()
+                else: st.error("Invalid Credentials")
 
 if not st.session_state.logged_in:
-    login()
+    login_screen()
     st.stop()
 
-# --- HELPER: LIVE INVENTORY TABLE ---
-def show_live_inventory():
-    st.markdown("### 📦 Live Pantry Status")
-    # Fetch Data
-    df_inv = fetch_data("""
-        SELECT item_name, quantity, unit_label, name as category 
-        FROM TBL_PANTRY 
-        JOIN TBL_CATEGORIES ON TBL_PANTRY.category_id = TBL_CATEGORIES.category_id
-    """)
-    # Display nicely
-    st.dataframe(df_inv, use_container_width=True)
-
-# --- SIDEBAR ---
-st.sidebar.title("👨‍🍳 Smart Kitchen OS")
-choice = st.sidebar.radio("Navigate", ["Inventory", "Bill Scanner", "Chef's Menu", "Customer AI"])
-
-# ==========================================
-# 1. INVENTORY (Add & Remove)
-# ==========================================
-if choice == "Inventory":
-    st.header("Manage Inventory")
+# --- SIDEBAR & THEME ---
+with st.sidebar:
+    st.markdown("### Navigation")
     
-    # Two Tabs: Add and Remove
-    tab1, tab2 = st.tabs(["Add Item", "Remove Item"])
+    nav_options = [
+        "Dashboard", 
+        "AI Bill Scanner", 
+        "Inventory Logs", 
+        "Catalog Entry", 
+        "Chef Management", 
+        "AI Executive Chef", 
+        "Analytics", 
+        "Admin Settings"
+    ]
+    
+    choice = st.radio("Go to", nav_options, label_visibility="collapsed")
+    
+    st.markdown("---")
+    if st.button("Logout", use_container_width=True):
+        st.session_state.logged_in = False
+        st.rerun()
+
+# --- HELPERS ---
+def initialize_database():
+    try:
+        conn = get_db_connection()
+        if not conn: st.error("❌ Cannot connect to Database."); return
+        cursor = conn.cursor()
+        with open('setup.sql', 'r') as f: sql_script = f.read()
+        sql_commands = [cmd.strip() for cmd in sql_script.split(';') if cmd.strip()]
+        prog = st.progress(0)
+        for i, cmd in enumerate(sql_commands):
+            try: cursor.execute(cmd)
+            except: pass
+            prog.progress((i + 1) / len(sql_commands))
+        conn.commit(); conn.close()
+        st.success("✅ Database Reset Successfully! Pantry is empty."); st.rerun()
+    except Exception as e: st.error(f"Error: {e}")
+
+def run_phase4_migration():
+    conn = get_db_connection()
+    if not conn: return
+    cursor = conn.cursor()
+    for q in [
+        "ALTER TABLE TBL_LOGS ADD COLUMN Unit_Price DECIMAL(10,2) DEFAULT 0.00;",
+        "ALTER TABLE TBL_LOGS ADD COLUMN Vendor_Name VARCHAR(100);",
+        "ALTER TABLE TBL_ITEM_CATALOG ADD COLUMN Last_Vendor VARCHAR(100);",
+        "ALTER TABLE TBL_ITEM_CATALOG ADD COLUMN Last_Price DECIMAL(10,2);"
+    ]:
+        try: cursor.execute(q)
+        except: pass
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS TBL_FOOTFALL (
+                Footfall_ID INT AUTO_INCREMENT PRIMARY KEY,
+                Log_Date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                Customer_Count INT,
+                Meal_Type VARCHAR(50)
+            )
+        """)
+    except Exception as e: st.error(f"Migration Error: {e}")
+    conn.commit(); conn.close()
+    st.success("✅ Database upgraded to Phase 4!")
+
+def safe_float(val, default=0.0):
+    try: return float(val)
+    except (ValueError, TypeError): return default
+
+# --- DATA FETCHERS ---
+def get_stock_status():
+    return fetch_data("""
+        SELECT c.Item_ID, c.Item_Name, c.Category, s.Current_Quantity, c.Standard_Unit, c.Shelf_Life_Days, s.Last_Updated, c.Last_Price, c.Last_Vendor
+        FROM TBL_PANTRY_STOCK s
+        JOIN TBL_ITEM_CATALOG c ON s.Item_ID = c.Item_ID
+        ORDER BY c.Item_Name
+    """)
+
+# --- MAIN UI ---
+
+# 1. DASHBOARD
+if choice == "Dashboard":
+    st.title("Dashboard")
+    st.markdown("Overview of inventory health and valuation.")
+    
+    try:
+        df = get_stock_status()
+        if df.empty:
+            st.info("ℹ️ Pantry is empty. Add items to get started.")
+        else:
+            df['Last_Updated'] = pd.to_datetime(df['Last_Updated'])
+            df['Shelf_Life_Days'] = pd.to_numeric(df['Shelf_Life_Days'], errors='coerce').fillna(7)
+            
+            now = datetime.now()
+            df['Days_Held'] = df['Last_Updated'].apply(lambda x: (now - x).days if pd.notnull(x) else 0)
+            df['Days_Remaining'] = df['Shelf_Life_Days'] - df['Days_Held']
+            
+            df = df.reset_index(drop=True)
+            df.index = df.index + 1
+
+            critical_items = df[(df['Days_Remaining'] < 3) | (df['Current_Quantity'] < 2)].copy()
+            
+            df['Last_Price'] = pd.to_numeric(df['Last_Price'], errors='coerce').fillna(0)
+            df['Current_Quantity'] = pd.to_numeric(df['Current_Quantity'], errors='coerce').fillna(0)
+            total_value = (df['Current_Quantity'] * df['Last_Price']).sum()
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total SKU Count", len(df))
+            c2.metric("Low Stock Items", len(df[df['Current_Quantity'] < 2]))
+            c3.metric("Critical Expiry", len(df[df['Days_Remaining'] < 3]))
+            c4.metric("Inventory Value", f"₹{total_value:,.2f}", help="Sum of (Qty * Last Price)")
+
+            st.divider()
+
+            if not critical_items.empty:
+                st.subheader("⚠️ Critical Attention Required")
+                
+                def highlight_critical(val):
+                    color = '#FF4B4B' 
+                    return f'color: {color}; font-weight: bold;'
+                
+                st.dataframe(
+                    critical_items[['Item_Name', 'Current_Quantity', 'Days_Remaining', 'Category']]
+                    .style
+                    .map(lambda x: highlight_critical(x), subset=['Days_Remaining'])
+                    .format({'Days_Remaining': '{:.1f}'}), 
+                    width="stretch"
+                )
+            
+            st.subheader("Full Inventory Catalog")
+            st.dataframe(
+                df[['Item_Name', 'Category', 'Current_Quantity', 'Standard_Unit', 'Last_Vendor', 'Last_Price', 'Days_Remaining']], 
+                width="stretch",
+                height=400
+            )
+    except Exception as e: st.error(f"⚠️ Dashboard Error: {e}")
+
+# 2. BILL SCANNER
+elif choice == "AI Bill Scanner":
+    st.title("AI Bill Scanner")
+    st.markdown("Upload receipt images to auto-update inventory using Llama Vision.")
+    
+    with st.container(border=True):
+        uploaded_file = st.file_uploader("Upload Bill Image", type=['png', 'jpg', 'jpeg'])
+        
+    if 'scanned_data' not in st.session_state: st.session_state.scanned_data = []
+    if 'scanned_vendor' not in st.session_state: st.session_state.scanned_vendor = ""
+
+    if uploaded_file:
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            st.image(uploaded_file, caption="Receipt Preview") 
+        with c2:
+            st.info("Click below to extract items, quantities, and prices.")
+            if st.button("Start AI Analysis", type="primary"):
+                with st.spinner("Processing image with Groq AI..."):
+                    res = scan_bill_with_groq(uploaded_file.getvalue())
+                    if "error" in res: st.error(res['error'])
+                    else:
+                        st.session_state.scanned_data = res.get("items", [])
+                        st.session_state.scanned_vendor = res.get("vendor", "Unknown")
+                        st.success(f"Analysis Complete! Found {len(st.session_state.scanned_data)} items.")
+
+    if st.session_state.scanned_data:
+        st.divider()
+        st.subheader("Verify & Commit")
+        vendor_name = st.text_input("Vendor Name", value=st.session_state.scanned_vendor)
+        
+        scan_df = pd.DataFrame(st.session_state.scanned_data)
+        if not scan_df.empty:
+            scan_df.index = scan_df.index + 1
+        
+        edited_df = st.data_editor(scan_df, num_rows="dynamic", width="stretch")
+        
+        if st.button("Save to Database", type="primary"):
+            count = 0
+            progress_bar = st.progress(0)
+            
+            edited_records = edited_df.to_dict('records')
+            total_items = len(edited_records)
+            
+            for idx, item in enumerate(edited_records):
+                i_name = item.get('name', 'Unk')
+                i_qty = safe_float(item.get('quantity', 0))
+                i_price = safe_float(item.get('price', 0))
+                
+                existing = fetch_data("SELECT Item_ID FROM TBL_ITEM_CATALOG WHERE LOWER(Item_Name) = LOWER(%s)", (i_name,))
+                i_id = None
+                
+                if not existing.empty:
+                    i_id = int(existing.iloc[0]['Item_ID'])
+                    execute_query("UPDATE TBL_ITEM_CATALOG SET Last_Vendor=%s, Last_Price=%s WHERE Item_ID=%s", (vendor_name, i_price, i_id))
+                else:
+                    raw_shelf = item.get('shelf_life', None)
+                    i_shelf_life = None
+                    i_category = 'Groceries'
+                    try: i_shelf_life = int(float(raw_shelf))
+                    except (ValueError, TypeError): i_shelf_life = None
+                    
+                    if i_shelf_life is None:
+                        with st.spinner(f"Fetching details for new item: {i_name}..."):
+                            ai_details = get_ai_item_details(i_name)
+                            if "error" not in ai_details:
+                                i_category = ai_details.get('category', 'Groceries')
+                                try: i_shelf_life = int(ai_details.get('shelf_life', 7))
+                                except: i_shelf_life = 7 
+                            else: i_shelf_life = 7
+                    
+                    execute_query(
+                        "INSERT INTO TBL_ITEM_CATALOG (Item_Name, Category, Standard_Unit, Shelf_Life_Days, Last_Vendor, Last_Price) VALUES (%s, %s, %s, %s, %s, %s)", 
+                        (i_name, i_category, item.get('unit', 'Units'), i_shelf_life, vendor_name, i_price)
+                    )
+                    id_df = fetch_data("SELECT Item_ID FROM TBL_ITEM_CATALOG WHERE Item_Name=%s ORDER BY Item_ID DESC LIMIT 1", (i_name,))
+                    if not id_df.empty: i_id = int(id_df.iloc[0]['Item_ID'])
+                
+                if i_id:
+                    execute_query("INSERT INTO TBL_LOGS (Item_ID, Action_Type, Quantity, Unit_Price, Vendor_Name) VALUES (%s, 'PURCHASE', %s, %s, %s)", (i_id, i_qty, i_price, vendor_name))
+                    check = fetch_data("SELECT Stock_ID FROM TBL_PANTRY_STOCK WHERE Item_ID=%s", (i_id,))
+                    if check.empty:
+                        execute_query("INSERT INTO TBL_PANTRY_STOCK (Item_ID, Current_Quantity) VALUES (%s, %s)", (i_id, i_qty))
+                    else:
+                        execute_query("UPDATE TBL_PANTRY_STOCK SET Current_Quantity = Current_Quantity + %s WHERE Item_ID = %s", (i_qty, i_id))
+                    count += 1
+                
+                progress_bar.progress((idx + 1) / total_items)
+                
+            st.success(f"Successfully committed {count} items to inventory!"); st.session_state.scanned_data = []; st.rerun()
+
+# 3. LOG STOCK
+elif choice == "Inventory Logs":
+    st.title("Inventory Logs")
+    tab1, tab2 = st.tabs(["Manual Adjustment", "Price History"])
+    items = fetch_data("SELECT Item_ID, Item_Name, Standard_Unit, Last_Price, Last_Vendor FROM TBL_ITEM_CATALOG ORDER BY Item_Name")
     
     with tab1:
-        c1, c2, c3 = st.columns(3)
-        i_name = c1.text_input("Item Name")
-        i_cat = c2.selectbox("Category", ["Dairy", "Spices", "Groceries", "Pulses", "Oil", "Beverages", "Utensils"])
-        i_qty = c3.number_input("Qty", 0.0, step=0.1)
-        
-        if st.button("➕ Add to Pantry"):
-            sql = """INSERT INTO TBL_PANTRY (item_name, category_id, quantity, unit_type, unit_label) 
-                     VALUES (%s, (SELECT category_id FROM TBL_CATEGORIES WHERE name=%s), %s, 'discrete', 'unit')"""
-            execute_query(sql, (i_name, i_cat, i_qty))
-            st.success(f"Added {i_name}!")
-            st.rerun() # Refresh immediately
+        if not items.empty:
+            c_sel, c_info = st.columns([2, 1])
+            with c_sel: 
+                raw_id = st.selectbox("Select Ingredient", items['Item_ID'], format_func=lambda x: items[items['Item_ID']==x]['Item_Name'].iloc[0])
+                i_id = int(raw_id)
+            
+            details = items[items['Item_ID'] == i_id].iloc[0]
+            curr_stock_df = fetch_data("SELECT Current_Quantity FROM TBL_PANTRY_STOCK WHERE Item_ID = %s", (i_id,))
+            current_qty = float(curr_stock_df.iloc[0]['Current_Quantity']) if not curr_stock_df.empty else 0.0
+            
+            st.info(f"**Current Stock:** {current_qty} {details['Standard_Unit']}  |  **Last Price:** ₹{details['Last_Price']}")
+            
+            with st.container(border=True):
+                c1, c2, c3, c4 = st.columns(4)
+                act = c1.selectbox("Action Type", ["PURCHASE", "CONSUME", "WASTE"])
+                qty = c2.number_input(f"Quantity ({details['Standard_Unit']})", min_value=0.1)
+                price = c3.number_input("Unit Price (₹)", value=float(details['Last_Price'] or 0))
+                vendor = c4.text_input("Vendor", value=str(details['Last_Vendor'] or ""))
+
+                if st.button("Update Inventory Record", type="primary", use_container_width=True):
+                    execute_query("INSERT INTO TBL_LOGS (Item_ID, Action_Type, Quantity, Unit_Price, Vendor_Name) VALUES (%s, %s, %s, %s, %s)", (i_id, act, qty, price, vendor))
+                    if act == "PURCHASE": execute_query("UPDATE TBL_ITEM_CATALOG SET Last_Vendor=%s, Last_Price=%s WHERE Item_ID=%s", (vendor, price, i_id))
+
+                    new_qty = current_qty + qty if act == "PURCHASE" else current_qty - qty
+                    
+                    if new_qty <= 0:
+                        execute_query("DELETE FROM TBL_PANTRY_STOCK WHERE Item_ID = %s", (i_id,))
+                        st.warning(f"Stock depleted. Item removed from active pantry.")
+                    else:
+                        check = fetch_data("SELECT Stock_ID FROM TBL_PANTRY_STOCK WHERE Item_ID=%s", (i_id,))
+                        if check.empty:
+                            execute_query("INSERT INTO TBL_PANTRY_STOCK (Item_ID, Current_Quantity) VALUES (%s, %s)", (i_id, new_qty))
+                        else:
+                            execute_query("UPDATE TBL_PANTRY_STOCK SET Current_Quantity = %s WHERE Item_ID = %s", (new_qty, i_id))
+                    st.success("Transaction recorded successfully!"); st.rerun()
 
     with tab2:
-        # Fetch current items for the dropdown
-        current_items = fetch_data("SELECT item_name FROM TBL_PANTRY")
-        if not current_items.empty:
-            item_to_remove = st.selectbox("Select Item to Remove", current_items['item_name'])
-            if st.button("🗑️ Remove Selected"):
-                delete_item_by_name(item_to_remove)
-                st.warning(f"Removed {item_to_remove}")
-                st.rerun() # Refresh immediately
-        else:
-            st.info("Pantry is empty.")
+        if not items.empty:
+            raw_hid = st.selectbox("Select Item for History", items['Item_ID'], format_func=lambda x: items[items['Item_ID']==x]['Item_Name'].iloc[0], key='h')
+            hid = int(raw_hid)
+            hist = fetch_data("SELECT Log_Date, Unit_Price, Vendor_Name, Quantity, Action_Type FROM TBL_LOGS WHERE Item_ID=%s ORDER BY Log_Date DESC", (hid,))
+            if not hist.empty: 
+                hist = hist.reset_index(drop=True)
+                hist.index = hist.index + 1
+                st.plotly_chart(px.line(hist[hist['Action_Type']=='PURCHASE'], x='Log_Date', y='Unit_Price', title="Price Fluctuation Trend (₹)"), use_container_width=True)
+                st.dataframe(hist, width="stretch")
 
-    st.divider()
-    # LIVE DISPLAY (Requirement 2 & 3)
-    show_live_inventory()
-
-# ==========================================
-# 2. BILL SCANNER
-# ==========================================
-elif choice == "Bill Scanner":
-    st.header("🧾 Bill Scanner")
-    uploaded = st.file_uploader("Upload Bill", type=['jpg','png'])
-    if uploaded and st.button("Analyze"):
-        data = process_bill_image(uploaded.getvalue())
-        st.json(data)
-        st.info("Logic to auto-add these to DB would go here.")
-
-# ==========================================
-# 3. CHEF'S MENU
-# ==========================================
-elif choice == "Chef's Menu":
-    st.header("🍳 AI Menu Planner")
+# 4. ADD NEW
+elif choice == "Catalog Entry":
+    st.title("Catalog Entry")
+    st.markdown("Register new ingredients into the system.")
     
-    # LIVE DISPLAY (Requirement 4)
-    with st.expander("View Available Ingredients", expanded=True):
-        show_live_inventory()
+    if 'new_item' not in st.session_state: st.session_state.new_item = {"name": "", "cat": "Dairy", "unit": "kg", "shelf": 7}
     
-    c1, c2 = st.columns(2)
-    prep_time = c1.slider("Time (mins)", 15, 120, 30)
-    cust_count = c2.number_input("Customers", 1, 100, 10)
+    with st.container(border=True):
+        c1, c2 = st.columns([3, 1])
+        name_in = c1.text_input("Ingredient Name", value=st.session_state.new_item['name'])
+        if c2.button("✨ AI Auto-Fill", help="Predict category and shelf life"):
+            with st.spinner("Analyzing..."):
+                res = get_ai_item_details(name_in)
+                if "error" not in res:
+                    st.session_state.new_item.update({"name": name_in, "cat": res.get("category"), "unit": res.get("unit"), "shelf": int(res.get("shelf_life", 7))})
+                    st.rerun()
+                else: st.error(res['error'])
     
-    if st.button("Generate Menu"):
-        inv = fetch_data("SELECT * FROM TBL_PANTRY")
-        chefs = fetch_data("SELECT * FROM TBL_CHEFS")
-        menu = generate_menu(inv, chefs, prep_time, cust_count)
+    with st.form("new_item_form"):
+        name = st.text_input("Confirm Name", value=name_in)
+        valid_cats = ["Dairy", "Vegetable", "Fruit", "Meat", "Grains", "Spices", "Beverage", "Cleaning", "Other"]
+        ai_cat = st.session_state.new_item.get("cat", "Dairy")
+        idx = 0
+        if ai_cat in valid_cats: idx = valid_cats.index(ai_cat)
         
-        for dish in menu.get('recommendations', []):
-            st.info(f"**{dish['dish_name']}** (Chef {dish['assigned_chef']})")
-
-# ==========================================
-# 4. CUSTOMER AI
-# ==========================================
-elif choice == "Customer AI":
-    st.header("📈 Customer Prediction")
-    
-    # LIVE DISPLAY (Requirement 5)
-    with st.expander("Check Stock for High Traffic", expanded=False):
-        show_live_inventory()
+        c3, c4 = st.columns(2)
+        cat = c3.selectbox("Category", valid_cats, index=idx)
+        unit = c4.selectbox("Unit of Measure", ["kg", "Liters", "Units", "Grams", "Packets", "Cans", "Bottles", "Dozen"], index=0)
         
-    d = st.date_input("Date")
-    if st.button("Predict"):
-        res = predict_customers(d)
-        st.metric("Predicted Customers", res['prediction'])
-        st.write(f"Holiday: {res['holiday_name']}")
+        c5, c6 = st.columns(2)
+        shelf = c5.number_input("Shelf Life (Days)", value=st.session_state.new_item['shelf'])
+        qty = c6.number_input("Opening Stock", min_value=0.0)
+        
+        c7, c8 = st.columns(2)
+        init_price = c7.number_input("Price per Unit (₹)", min_value=0.0)
+        init_vendor = c8.text_input("Default Vendor")
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.form_submit_button("Create Item", type="primary"):
+            if not name:
+                st.error("Name is required!")
+            else:
+                check = fetch_data("SELECT Item_ID FROM TBL_ITEM_CATALOG WHERE LOWER(Item_Name) = LOWER(%s)", (name,))
+                if not check.empty: st.error("Item already exists in catalog!")
+                else:
+                    s1, m1 = execute_query("INSERT INTO TBL_ITEM_CATALOG (Item_Name, Category, Standard_Unit, Shelf_Life_Days, Last_Vendor, Last_Price) VALUES (%s, %s, %s, %s, %s, %s)", (name, cat, unit, shelf, init_vendor, init_price))
+                    if s1:
+                        new_item_row = fetch_data("SELECT Item_ID FROM TBL_ITEM_CATALOG WHERE Item_Name=%s", (name,))
+                        if not new_item_row.empty:
+                            nid = int(new_item_row.iloc[0]['Item_ID'])
+                            s2, m2 = execute_query("INSERT INTO TBL_PANTRY_STOCK (Item_ID, Current_Quantity) VALUES (%s, %s)", (nid, qty))
+                            if s2:
+                                if qty > 0:
+                                    execute_query("INSERT INTO TBL_LOGS (Item_ID, Action_Type, Quantity, Unit_Price, Vendor_Name) VALUES (%s, 'PURCHASE', %s, %s, %s)", (nid, qty, init_price, init_vendor))
+                                st.success(f"Item '{name}' created successfully!")
+                                st.session_state.new_item = {"name": "", "cat": "Dairy", "unit": "kg", "shelf": 7}
+                                st.rerun()
+                            else: st.error(f"Stock Error: {m2}")
+                    else: st.error(f"Catalog Error: {m1}")
+
+# 5. CHEF MANAGEMENT
+elif choice == "Chef Management":
+    st.title("Chef Management")
+    chefs = fetch_data("SELECT * FROM TBL_CHEF_PROFILE")
+    if not chefs.empty: 
+        chefs = chefs.reset_index(drop=True)
+        chefs.index = chefs.index + 1
+        st.dataframe(chefs, width="stretch")
+    
+    st.subheader("Onboard New Chef")
+    with st.form("chef_form"):
+        c1, c2, c3 = st.columns(3)
+        name = c1.text_input("Full Name")
+        spec = c2.text_input("Specialty (e.g., Italian)")
+        shift = c3.selectbox("Shift", ["Morning", "Evening", "Full Day"])
+        if st.form_submit_button("Hire Staff"):
+            execute_query("INSERT INTO TBL_CHEF_PROFILE (Name, Specialty, Shift_Timing) VALUES (%s, %s, %s)", (name, spec, shift))
+            st.success("Staff profile created!"); st.rerun()
+
+# 6. AI CHEF
+elif choice == "AI Executive Chef":
+    st.title("AI Executive Chef")
+    st.markdown("Generate menus based on current stock availability.")
+    
+    chefs = fetch_data("SELECT * FROM TBL_CHEF_PROFILE")
+    stock = get_stock_status()
+    
+    if chefs.empty or stock.empty: 
+        st.warning("Please add chefs and inventory items to use this feature.")
+    else:
+        with st.container(border=True):
+            c1, c2 = st.columns(2)
+            cust = c1.number_input("Expected Guests", 1, value=4)
+            meal = c2.selectbox("Meal Service", ["Lunch", "Dinner"])
+            
+            if st.button("Generate Smart Menu", type="primary"):
+                with st.spinner("AI is planning the menu..."):
+                    chef_str = ", ".join([f"{r['Name']} ({r['Specialty']})" for _, r in chefs.iterrows()])
+                    stock_str = ", ".join([f"{r['Item_Name']} ({r['Current_Quantity']})" for _, r in stock.iterrows()])
+                    st.session_state.gen_menu = generate_chef_menu(stock_str, chef_str, cust)
+        
+        if 'gen_menu' in st.session_state:
+            st.markdown("### 🍽️ Proposed Menu")
+            st.markdown(st.session_state.gen_menu)
+            
+            st.warning("Clicking 'Cook' will deduct the estimated ingredients from your live inventory.")
+            
+            if st.button("👨‍🍳 Cook & Deduct Stock"):
+                log_footfall_transaction(cust, meal)
+                
+                # UPDATED: Pass inventory string so AI matches names correctly
+                stock_names = ", ".join([f"{r['Item_Name']}" for _, r in stock.iterrows()])
+                bom = get_menu_ingredients_for_deduction(st.session_state.gen_menu, cust, stock_names)
+                
+                if "ingredients" in bom:
+                    res = process_smart_deduction(bom['ingredients'])
+                    if res['success']: 
+                        st.session_state.deduction_report = res
+                        st.success("Stock updated successfully!")
+                        st.rerun()
+                    else: st.error(res['error'])
+
+        # --- REPORT DISPLAY (Persists after Refresh) ---
+        if 'deduction_report' in st.session_state:
+            st.divider()
+            st.subheader("📝 Last Cooked Transaction Report")
+            res = st.session_state.deduction_report
+            
+            c1, c2 = st.columns([2, 1])
+            with c1:
+                rep_df = pd.DataFrame(res['report'])
+                if not rep_df.empty:
+                    rep_df.index = rep_df.index + 1
+                    st.dataframe(rep_df, width="stretch")
+                else:
+                    st.info("No stock was deducted (Items might be missing).")
+
+            with c2:
+                if res.get('missing'):
+                    st.error(f"⚠️ Unmatched Items (Not Deducted):\n\n" + "\n".join([f"- {i}" for i in res['missing']]))
+            
+            if st.button("Dismiss Report"):
+                del st.session_state.deduction_report
+                st.rerun()
+
+# 7. ANALYTICS
+elif choice == "Analytics":
+    st.title("Analytics")
+    t1, t2 = st.tabs(["Inventory Demand", "Footfall Traffic"])
+    
+    with t1:
+        items = fetch_data("SELECT Item_ID, Item_Name FROM TBL_ITEM_CATALOG")
+        if not items.empty:
+            raw_sid = st.selectbox("Select Item for Forecasting", items['Item_ID'], format_func=lambda x: items[items['Item_ID']==x]['Item_Name'].iloc[0])
+            sid = int(raw_sid)
+            if st.button("Generate Demand Forecast"):
+                with st.spinner("Calculating projection..."):
+                    res = get_item_forecast(sid)
+                    if "error" in res: st.error(res['error'])
+                    else: 
+                        st.metric("Predicted Consumption (Next 7 Days)", f"{res['total_demand']} Units")
+                        st.plotly_chart(px.line(res['trend_chart'], x='ds', y='yhat', title="Demand Trend"), use_container_width=True)
+    with t2:
+        st.markdown("### Customer Traffic Prediction")
+        if st.button("Analyze Footfall"):
+            with st.spinner("Analyzing patterns..."):
+                res = get_footfall_forecast()
+                if "error" in res: st.error(res['error'])
+                else: 
+                    st.metric("Expected Visitors (Next 7 Days)", res['total_visitors'])
+                    st.plotly_chart(px.line(res['trend_chart'], x='ds', y='yhat', title="Visitor Forecast"), use_container_width=True)
+
+# 8. ADMIN
+elif choice == "Admin Settings":
+    st.title("Admin Settings")
+    
+    with st.container(border=True):
+        st.subheader("Database Maintenance")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Run Phase 4 Migration", help="Update Schema"): 
+                run_phase4_migration()
+            
+            if st.button("Reset Database", type="primary", help="⚠️ Wipes all data"): 
+                initialize_database()
+        
+        with c2:
+            if st.button("Seed Mock Data", help="Fills DB with test data"): 
+                with st.spinner("Seeding..."): st.info(seed_historical_data())
