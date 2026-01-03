@@ -5,9 +5,9 @@ import time
 from datetime import datetime
 from backend_logic import (
     fetch_data, execute_query, get_db_connection, scan_bill_with_groq, 
-    get_ai_item_details, generate_chef_menu, get_menu_ingredients_for_deduction, 
-    process_smart_deduction, seed_historical_data, get_item_forecast,
-    get_footfall_forecast, log_footfall_transaction
+    get_ai_item_details, 
+    seed_historical_data, get_item_forecast,
+    get_footfall_forecast
 )
 
 # --- PAGE CONFIG ---
@@ -90,11 +90,12 @@ with st.sidebar:
     
     nav_options = [
         "Dashboard", 
+        "Family Setup",      # NEW
+        "Morning Rush",      # NEW (The Main Tool)
+        "Leftover Wizard",   # NEW
         "AI Bill Scanner", 
         "Inventory Logs", 
         "Catalog Entry", 
-        "Chef Management", 
-        "AI Executive Chef", 
         "Analytics", 
         "Admin Settings"
     ]
@@ -220,7 +221,109 @@ if choice == "Dashboard":
             )
     except Exception as e: st.error(f"⚠️ Dashboard Error: {e}")
 
-# 2. BILL SCANNER
+
+# 2. Family Setup
+elif choice == "Family Setup":
+    st.title("🏡 Family Configuration")
+    st.markdown("Set up your family members and their schedules once.")
+    
+    # Fetch existing members
+    members = fetch_data("SELECT * FROM TBL_FAMILY_MEMBERS ORDER BY Leave_Time ASC")
+    if not members.empty:
+        st.subheader("Current Family Members")
+        st.dataframe(members[['Name', 'Role', 'Leave_Time', 'Needs_Packed_Lunch', 'Health_Condition']], width=1000)
+
+    st.divider()
+    st.subheader("Add New Member")
+    
+    with st.form("add_member_form"):
+        c1, c2 = st.columns(2)
+        name = c1.text_input("Name (e.g., Rohan)")
+        role = c2.selectbox("Role", ["Father", "Mother", "Grandparent", "Son", "Daughter", "House Help"])
+        
+        c3, c4 = st.columns(2)
+        health = c3.selectbox("Health Condition", ["None", "Diabetes", "High BP", "Cholesterol", "Allergy"])
+        pack_lunch = c4.checkbox("Needs Packed Lunch?")
+        
+        c5, c6 = st.columns(2)
+        # Use simple text for time to avoid complexity, or strict time input
+        leave_time = c5.time_input("Leaves Home At (Leave empty if stays home)", value=None)
+        
+        if st.form_submit_button("Save Member"):
+            l_time_str = leave_time.strftime('%H:%M:%S') if leave_time else None
+            
+            execute_query(
+                "INSERT INTO TBL_FAMILY_MEMBERS (Name, Role, Health_Condition, Leave_Time, Needs_Packed_Lunch) VALUES (%s, %s, %s, %s, %s)",
+                (name, role, health, l_time_str, pack_lunch)
+            )
+            st.success(f"{name} added to family!")
+            st.rerun()
+
+# 3. Morning Rush
+elif choice == "Morning Rush":
+    st.title("☀️ Morning Rush Planner")
+    st.markdown("Plan breakfast and lunch boxes based on who leaves first.")
+    
+    # 1. Imports needed just for this block
+    from backend_logic import get_family_schedule, generate_morning_plan, get_stock_status
+    
+    # 2. Context Inputs
+    col1, col2 = st.columns(2)
+    with col1:
+        guest_count = st.number_input("Any Guests Today?", min_value=0, value=0, help="Enter number of extra people eating")
+    with col2:
+        lang = st.selectbox("Preferred Language", ["English", "Hindi", "Kannada", "Tamil", "Telugu"])
+
+    # 3. Show Schedule Timeline
+    family = get_family_schedule()
+    if family.empty:
+        st.warning("Please go to 'Family Setup' and add members first.")
+    else:
+        st.subheader("📅 Today's Timeline")
+        # Visual Timeline
+        for _, person in family.iterrows():
+            time_str = person['Leave_Time'] if person['Leave_Time'] else "🏠 Stays Home"
+            lunch_icon = "🍱 Pack Dabba" if person['Needs_Packed_Lunch'] else "🍽️ Eats Home"
+            health_badge = f"🩺 {person['Health_Condition']}" if person['Health_Condition'] != "None" else ""
+            
+            st.info(f"**{time_str}** : {person['Name']} ({person['Role']}) — {lunch_icon} {health_badge}")
+
+        st.divider()
+
+        # 4. Generate AI Plan
+        if st.button("✨ Create Cooking Plan", type="primary"):
+            stock = get_stock_status()
+            if stock.empty:
+                st.error("Pantry is empty! Add items in Catalog first.")
+            else:
+                stock_str = ", ".join([f"{r['Item_Name']} ({r['Current_Quantity']} {r['Standard_Unit']})" for _, r in stock.iterrows()])
+                
+                with st.spinner("🤖 Thinking... (Checking Inventory & Schedule)"):
+                    plan = generate_morning_plan(stock_str, family, guest_count, lang)
+                    st.markdown("### 🍳 Your Morning Plan")
+                    st.markdown(plan)
+
+# 4. Leftover Wizard
+elif choice == "Leftover Wizard":
+    st.title("♻️ Leftover Wizard")
+    st.markdown("Don't throw food away! Let AI suggest how to reuse it.")
+    
+    from backend_logic import suggest_leftover_recipe
+    
+    c1, c2 = st.columns([2, 1])
+    item = c1.text_input("What is leftover? (e.g., Rice, Dal, Chapati)")
+    lang_lo = c2.selectbox("Language", ["English", "Hindi", "Kannada"])
+    
+    if st.button("Get Ideas"):
+        if item:
+            with st.spinner("Asking Grandma AI..."):
+                idea = suggest_leftover_recipe(item, lang_lo)
+                st.success("Try these:")
+                st.markdown(idea)
+        else:
+            st.warning("Enter an item name.")
+
+# 5. AI Bill Scanner
 elif choice == "AI Bill Scanner":
     st.title("AI Bill Scanner")
     st.markdown("Upload receipt images to auto-update inventory using Llama Vision.")
@@ -311,7 +414,7 @@ elif choice == "AI Bill Scanner":
                 
             st.success(f"Successfully committed {count} items to inventory!"); st.session_state.scanned_data = []; st.rerun()
 
-# 3. LOG STOCK
+# 6. Inventory Logs
 elif choice == "Inventory Logs":
     st.title("Inventory Logs")
     tab1, tab2 = st.tabs(["Manual Adjustment", "Price History"])
@@ -365,7 +468,7 @@ elif choice == "Inventory Logs":
                 st.plotly_chart(px.line(hist[hist['Action_Type']=='PURCHASE'], x='Log_Date', y='Unit_Price', title="Price Fluctuation Trend (₹)"), use_container_width=True)
                 st.dataframe(hist, width="stretch")
 
-# 4. ADD NEW
+# 7. Catalog Entry
 elif choice == "Catalog Entry":
     st.title("Catalog Entry")
     st.markdown("Register new ingredients into the system.")
@@ -425,92 +528,7 @@ elif choice == "Catalog Entry":
                             else: st.error(f"Stock Error: {m2}")
                     else: st.error(f"Catalog Error: {m1}")
 
-# 5. CHEF MANAGEMENT
-elif choice == "Chef Management":
-    st.title("Chef Management")
-    chefs = fetch_data("SELECT * FROM TBL_CHEF_PROFILE")
-    if not chefs.empty: 
-        chefs = chefs.reset_index(drop=True)
-        chefs.index = chefs.index + 1
-        st.dataframe(chefs, width="stretch")
-    
-    st.subheader("Onboard New Chef")
-    with st.form("chef_form"):
-        c1, c2, c3 = st.columns(3)
-        name = c1.text_input("Full Name")
-        spec = c2.text_input("Specialty (e.g., Italian)")
-        shift = c3.selectbox("Shift", ["Morning", "Evening", "Full Day"])
-        if st.form_submit_button("Hire Staff"):
-            execute_query("INSERT INTO TBL_CHEF_PROFILE (Name, Specialty, Shift_Timing) VALUES (%s, %s, %s)", (name, spec, shift))
-            st.success("Staff profile created!"); st.rerun()
-
-# 6. AI CHEF
-elif choice == "AI Executive Chef":
-    st.title("AI Executive Chef")
-    st.markdown("Generate menus based on current stock availability.")
-    
-    chefs = fetch_data("SELECT * FROM TBL_CHEF_PROFILE")
-    stock = get_stock_status()
-    
-    if chefs.empty or stock.empty: 
-        st.warning("Please add chefs and inventory items to use this feature.")
-    else:
-        with st.container(border=True):
-            c1, c2 = st.columns(2)
-            cust = c1.number_input("Expected Guests", 1, value=4)
-            meal = c2.selectbox("Meal Service", ["Lunch", "Dinner"])
-            
-            if st.button("Generate Smart Menu", type="primary"):
-                with st.spinner("AI is planning the menu..."):
-                    chef_str = ", ".join([f"{r['Name']} ({r['Specialty']})" for _, r in chefs.iterrows()])
-                    stock_str = ", ".join([f"{r['Item_Name']} ({r['Current_Quantity']})" for _, r in stock.iterrows()])
-                    st.session_state.gen_menu = generate_chef_menu(stock_str, chef_str, cust)
-        
-        if 'gen_menu' in st.session_state:
-            st.markdown("### 🍽️ Proposed Menu")
-            st.markdown(st.session_state.gen_menu)
-            
-            st.warning("Clicking 'Cook' will deduct the estimated ingredients from your live inventory.")
-            
-            if st.button("👨‍🍳 Cook & Deduct Stock"):
-                log_footfall_transaction(cust, meal)
-                
-                # UPDATED: Pass inventory string so AI matches names correctly
-                stock_names = ", ".join([f"{r['Item_Name']}" for _, r in stock.iterrows()])
-                bom = get_menu_ingredients_for_deduction(st.session_state.gen_menu, cust, stock_names)
-                
-                if "ingredients" in bom:
-                    res = process_smart_deduction(bom['ingredients'])
-                    if res['success']: 
-                        st.session_state.deduction_report = res
-                        st.success("Stock updated successfully!")
-                        st.rerun()
-                    else: st.error(res['error'])
-
-        # --- REPORT DISPLAY (Persists after Refresh) ---
-        if 'deduction_report' in st.session_state:
-            st.divider()
-            st.subheader("📝 Last Cooked Transaction Report")
-            res = st.session_state.deduction_report
-            
-            c1, c2 = st.columns([2, 1])
-            with c1:
-                rep_df = pd.DataFrame(res['report'])
-                if not rep_df.empty:
-                    rep_df.index = rep_df.index + 1
-                    st.dataframe(rep_df, width="stretch")
-                else:
-                    st.info("No stock was deducted (Items might be missing).")
-
-            with c2:
-                if res.get('missing'):
-                    st.error(f"⚠️ Unmatched Items (Not Deducted):\n\n" + "\n".join([f"- {i}" for i in res['missing']]))
-            
-            if st.button("Dismiss Report"):
-                del st.session_state.deduction_report
-                st.rerun()
-
-# 7. ANALYTICS
+# 8. ANALYTICS
 elif choice == "Analytics":
     st.title("Analytics")
     t1, t2 = st.tabs(["Inventory Demand", "Footfall Traffic"])
@@ -537,7 +555,7 @@ elif choice == "Analytics":
                     st.metric("Expected Visitors (Next 7 Days)", res['total_visitors'])
                     st.plotly_chart(px.line(res['trend_chart'], x='ds', y='yhat', title="Visitor Forecast"), use_container_width=True)
 
-# 8. ADMIN
+# 9. Admin Settings
 elif choice == "Admin Settings":
     st.title("Admin Settings")
     
