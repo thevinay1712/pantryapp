@@ -275,10 +275,51 @@ def scan_bill_with_groq(image_bytes):
         return json.loads(client.chat.completions.create(model="meta-llama/llama-4-scout-17b-16e-instruct", messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}], temperature=0, response_format={"type": "json_object"}).choices[0].message.content)
     except Exception as e: return {"error": str(e)}
 
-def generate_chef_menu(stock, chefs, customers):
+def generate_morning_plan(inventory_list, family_df, guest_count=0, language="English"):
     if not client: return "Error: API Key missing"
-    prompt = f"Create a 4-course menu for {customers} people. Available Stock: {stock}. Chefs available: {chefs}. Assign chefs to dishes. List missing ingredients if any."
-    try: return client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.7).choices[0].message.content
+    
+    # 1. Construct Family Context
+    family_context = ""
+    total_people = len(family_df) + guest_count
+    
+    for _, row in family_df.iterrows():
+        lunch_status = "Needs Packed Lunch" if row['Needs_Packed_Lunch'] else "Eats Lunch at Home"
+        leave_status = f"Leaves at {row['Leave_Time']}" if row['Leave_Time'] else "Stays Home"
+        health = f"(Health: {row['Health_Condition']})" if row['Health_Condition'] != "None" else ""
+        
+        family_context += f"- {row['Name']} ({row['Role']}): {leave_status}, {lunch_status} {health}\n"
+
+    # 2. Guest Logic
+    guest_context = f"Note: There are {guest_count} extra guests today." if guest_count > 0 else ""
+
+    # 3. The Prompt
+    prompt = f"""
+    You are a Smart Indian Kitchen Assistant.
+    
+    CURRENT INVENTORY:
+    {inventory_list}
+    
+    FAMILY SCHEDULE (Who leaves first needs food first!):
+    {family_context}
+    {guest_context}
+    
+    TASK:
+    Plan the 'Morning Rush' (Breakfast & Lunch).
+    1. Suggest ONE Breakfast dish and ONE Lunch dish that uses available inventory.
+    2. Prioritize the person leaving earliest (e.g., if Son leaves at 7:30, food must be ready by 7:00).
+    3. Suggest modifications for Health Issues (e.g., "Less sugar for Dad").
+    4. Calculate Total Quantities (e.g., "Total Idlis: 12 + 4 for guests = 16").
+    
+    OUTPUT FORMAT:
+    Output the response in {language} language. Use simple, clear bullet points.
+    """
+    
+    try: 
+        return client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        ).choices[0].message.content
     except Exception as e: return str(e)
 
 # UPDATED FUNCTION WITH INVENTORY CONTEXT
@@ -306,3 +347,32 @@ def get_menu_ingredients_for_deduction(menu, customers, inventory_list=""):
     """
     try: return json.loads(client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0, response_format={"type": "json_object"}).choices[0].message.content)
     except Exception as e: return {"error": str(e)}
+
+# Getting family schedule
+def get_family_schedule():
+    """Fetches family members sorted by who leaves home earliest."""
+    df = fetch_data("""
+        SELECT Member_ID, Name, Role, Health_Condition, 
+               DATE_FORMAT(Leave_Time, '%H:%i') as Leave_Time, 
+               Needs_Packed_Lunch 
+        FROM TBL_FAMILY_MEMBERS 
+        ORDER BY Leave_Time ASC
+    """)
+    return df
+
+# Leftover Wizard
+def suggest_leftover_recipe(leftover_item, language="English"):
+    if not client: return "Error: API Key missing"
+    
+    prompt = f"""
+    I have leftover "{leftover_item}" in the fridge.
+    Suggest 2 quick Indian recipes to reuse it for today's dinner or tomorrow's lunch box.
+    Output in {language}.
+    """
+    try: 
+        return client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        ).choices[0].message.content
+    except Exception as e: return str(e)
