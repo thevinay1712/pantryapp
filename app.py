@@ -221,20 +221,31 @@ if choice == "Dashboard":
             )
     except Exception as e: st.error(f"⚠️ Dashboard Error: {e}")
 
-
-# 2. Family Setup
+#2. Family setup
 elif choice == "Family Setup":
     st.title("🏡 Family Configuration")
     st.markdown("Set up your family members and their schedules once.")
     
     # Fetch existing members
-    members = fetch_data("SELECT * FROM TBL_FAMILY_MEMBERS ORDER BY Leave_Time ASC")
+    members = fetch_data("""
+            SELECT Member_ID, Name, Role, Health_Condition, 
+                DATE_FORMAT(Leave_Time, '%H:%i') as Leave_Time, 
+                Needs_Packed_Lunch 
+            FROM TBL_FAMILY_MEMBERS 
+            ORDER BY Leave_Time ASC
+        """)
+    
+    # --- MISSING PART ADDED BELOW ---
     if not members.empty:
         st.subheader("Current Family Members")
-        st.dataframe(members[['Name', 'Role', 'Leave_Time', 'Needs_Packed_Lunch', 'Health_Condition']], width=1000)
-
+        st.dataframe(members, width=1000)
+    else:
+        st.info("No family members added yet.")
+    # --------------------------------
+    
     st.divider()
     st.subheader("Add New Member")
+
     
     with st.form("add_member_form"):
         c1, c2 = st.columns(2)
@@ -252,12 +263,19 @@ elif choice == "Family Setup":
         if st.form_submit_button("Save Member"):
             l_time_str = leave_time.strftime('%H:%M:%S') if leave_time else None
             
-            execute_query(
+            # --- UPDATED CODE START ---
+            success, message = execute_query(
                 "INSERT INTO TBL_FAMILY_MEMBERS (Name, Role, Health_Condition, Leave_Time, Needs_Packed_Lunch) VALUES (%s, %s, %s, %s, %s)",
                 (name, role, health, l_time_str, pack_lunch)
             )
-            st.success(f"{name} added to family!")
-            st.rerun()
+            
+            if success:
+                st.success(f"✅ {name} added to family!")
+                time.sleep(1) # Give a moment to read the message
+                st.rerun()
+            else:
+                st.error(f"❌ Database Error: {message}")
+            # --- UPDATED CODE END ---
 
 # 3. Morning Rush
 elif choice == "Morning Rush":
@@ -265,7 +283,7 @@ elif choice == "Morning Rush":
     st.markdown("Plan breakfast and lunch boxes based on who leaves first.")
     
     # 1. Imports needed just for this block
-    from backend_logic import get_family_schedule, generate_morning_plan, get_stock_status
+    from backend_logic import get_family_schedule, generate_morning_plan
     
     # 2. Context Inputs
     col1, col2 = st.columns(2)
