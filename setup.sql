@@ -1,0 +1,82 @@
+-- setup.sql (VERSION 2: SMART HOME EDITION)
+
+-- 1. CLEANUP
+SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS TBL_DISH_PREFERENCES;
+DROP TABLE IF EXISTS TBL_FAMILY_MEMBERS;
+DROP TABLE IF EXISTS TBL_FAMILY_CONFIG;
+DROP TABLE IF EXISTS TBL_PANTRY_STOCK;
+DROP TABLE IF EXISTS TBL_LOGS;
+DROP TABLE IF EXISTS TBL_ITEM_CATALOG;
+DROP TABLE IF EXISTS TBL_VENDOR;
+-- Dropping old commercial tables
+DROP TABLE IF EXISTS TBL_CHEF_PROFILE; 
+DROP TABLE IF EXISTS TBL_FOOTFALL;
+SET FOREIGN_KEY_CHECKS = 1;
+
+-- 2. MASTER TABLES
+CREATE TABLE TBL_ITEM_CATALOG (
+    Item_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Item_Name VARCHAR(100) NOT NULL UNIQUE,
+    Category VARCHAR(50),
+    Standard_Unit VARCHAR(20) DEFAULT 'units',
+    Shelf_Life_Days INT DEFAULT 7,
+    Last_Vendor VARCHAR(100),
+    Last_Price DECIMAL(10,2)
+);
+
+-- NEW: Family Configuration
+CREATE TABLE TBL_FAMILY_CONFIG (
+    Config_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Family_Type ENUM('Nuclear', 'Joint') DEFAULT 'Nuclear',
+    Address VARCHAR(255)
+);
+
+-- NEW: Family Members Table
+CREATE TABLE TBL_FAMILY_MEMBERS (
+    Member_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Name VARCHAR(100),
+    Role VARCHAR(50), -- e.g., Father, Elder Child
+    Age INT,
+    Health_Condition VARCHAR(255), -- e.g., "Diabetes"
+    Wake_Up_Time TIME,
+    Leave_Time TIME, -- NULL if they stay home
+    Needs_Packed_Lunch BOOLEAN DEFAULT FALSE
+);
+
+-- NEW: Dish Preferences (Who eats what)
+CREATE TABLE TBL_DISH_PREFERENCES (
+    Pref_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Member_ID INT,
+    Dish_Name VARCHAR(100), -- e.g., "Idli"
+    Standard_Qty DECIMAL(5,2), -- e.g., 4.0
+    FOREIGN KEY (Member_ID) REFERENCES TBL_FAMILY_MEMBERS(Member_ID)
+);
+
+-- 3. TRANSACTION TABLES
+CREATE TABLE TBL_PANTRY_STOCK (
+    Stock_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Item_ID INT,
+    Current_Quantity DECIMAL(10,3) DEFAULT 0.000,
+    Last_Updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (Item_ID) REFERENCES TBL_ITEM_CATALOG(Item_ID)
+);
+
+CREATE TABLE TBL_LOGS (
+    Log_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Item_ID INT,
+    Action_Type ENUM('PURCHASE', 'CONSUME', 'WASTE') NOT NULL,
+    Quantity DECIMAL(10,3) NOT NULL,
+    Unit_Price DECIMAL(10,2) DEFAULT 0.00,
+    Vendor_Name VARCHAR(100),
+    Log_Date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (Item_ID) REFERENCES TBL_ITEM_CATALOG(Item_ID)
+);
+
+-- 4. DEFAULT DATA
+INSERT INTO TBL_ITEM_CATALOG (Item_Name, Category, Standard_Unit, Shelf_Life_Days) VALUES 
+('Milk', 'Dairy', 'Liters', 4),
+('Eggs', 'Dairy', 'Units', 14),
+('Idli Rice', 'Grains', 'kg', 180),
+('Urad Dal', 'Grains', 'kg', 180),
+('Tomato', 'Vegetable', 'kg', 5);
