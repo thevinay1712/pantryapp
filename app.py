@@ -232,6 +232,7 @@ elif choice == "Family Setup":
     tab1, tab2 = st.tabs(["📋 Member List & Add New", "✏️ Edit & Delete"])
 
     # --- TAB 1: VIEW & ADD ---
+# --- TAB 1: VIEW & ADD ---
     with tab1:
         # Fetch existing members
         members = fetch_data("""
@@ -243,7 +244,8 @@ elif choice == "Family Setup":
         """)
         
         if not members.empty:
-            st.dataframe(members, use_container_width=True)
+            # FIX: Changed use_container_width=True to width="stretch"
+            st.dataframe(members, width="stretch")
         else:
             st.info("No family members added yet.")
 
@@ -450,15 +452,14 @@ elif choice == "Morning Rush":
                         })
                 
                 st.divider()
-            
-            # --- STEP 5: NUTRITION DASHBOARD (Live Update) ---
+
+# --- STEP 5: NUTRITION DASHBOARD (Live Update) ---
             if nutrition_summary:
                 st.markdown("### 📊 Nutrition Dashboard (Preview)")
                 nut_df = pd.DataFrame(nutrition_summary)
                 
-                # Clean up protein string (remove 'g') to sum it? 
-                # For now, just showing the table is enough visual aid.
-                st.dataframe(nut_df, use_container_width=True)
+                # FIX: Changed use_container_width=True to width="stretch"
+                st.dataframe(nut_df, width="stretch")
                 
                 total_cal = nut_df['Calories'].sum() if 'Calories' in nut_df.columns else 0
                 st.metric("Total Morning Calories (Family)", f"{total_cal} kcal")
