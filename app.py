@@ -232,6 +232,7 @@ elif choice == "Family Setup":
     tab1, tab2 = st.tabs(["📋 Member List & Add New", "✏️ Edit & Delete"])
 
     # --- TAB 1: VIEW & ADD ---
+# --- TAB 1: VIEW & ADD ---
     with tab1:
         # Fetch existing members
         members = fetch_data("""
@@ -243,7 +244,8 @@ elif choice == "Family Setup":
         """)
         
         if not members.empty:
-            st.dataframe(members, use_container_width=True)
+            # FIX: Changed use_container_width=True to width="stretch"
+            st.dataframe(members, width="stretch")
         else:
             st.info("No family members added yet.")
 
@@ -359,50 +361,45 @@ elif choice == "Family Setup":
                 st.error("Could not fetch details. Please check database connection.")
 
 # 3. Morning Rush
+# 3. Morning Rush (Final Version: Selection, Deduction & Nutrition)
 elif choice == "Morning Rush":
     st.title("☀️ Morning Rush Planner")
     st.markdown("Plan breakfast and lunch boxes based on who leaves first.")
     
-    # 1. Imports needed just for this block
+    # Imports
     from backend_logic import get_family_schedule, generate_morning_plan, process_meal_deduction
     
-    # 2. Context Inputs
-    col1, col2 = st.columns(2)
+    # 1. Context Inputs (Language removed as requested)
+    col1, col2 = st.columns([1, 2])
     with col1:
         guest_count = st.number_input("Any Guests Today?", min_value=0, value=0, help="Enter number of extra people eating")
-    with col2:
-        lang = st.selectbox("Preferred Language", ["English", "Hindi", "Kannada", "Tamil", "Telugu"])
-
-    # 3. Show Schedule Timeline
+    
+    # 2. Show Schedule Timeline
     family = get_family_schedule()
     if family.empty:
         st.warning("Please go to 'Family Setup' and add members first.")
     else:
         st.subheader("📅 Today's Timeline")
-        # Visual Timeline
         for _, person in family.iterrows():
             time_str = person['Leave_Time'] if person['Leave_Time'] else "🏠 Stays Home"
             lunch_icon = "🍱 Pack Dabba" if person['Needs_Packed_Lunch'] else "🍽️ Eats Home"
             health_badge = f"🩺 {person['Health_Condition']}" if person['Health_Condition'] != "None" else ""
-            
             st.info(f"**{time_str}** : {person['Name']} ({person['Role']}) — {lunch_icon} {health_badge}")
 
         st.divider()
 
-        # 4. Generate AI Plan
-# 4. Generate AI Plan
+        # 3. Generate AI Plan
         if st.button("✨ Create Cooking Plan", type="primary"):
-            
-            # --- DEBUG START: Check what the AI actually sees ---
-            # (You can remove this block later once it works)
+            # Debug: Check inventory visibility
             from backend_logic import get_inventory_with_ids
             raw_inv = get_inventory_with_ids()
-            with st.expander("🕵️ Debug: What is in the Pantry?"):
-                st.text(raw_inv)
-            # --- DEBUG END ---
+            # Uncomment the next two lines if you suspect inventory issues
+            # with st.expander("🕵️ Debug: Inventory Seen by AI"):
+            #    st.text(raw_inv)
 
             with st.spinner("🤖 Chef AI is matching recipes to your specific inventory..."):
-                plan_json = generate_morning_plan(family, guest_count, lang)
+                # Defaulting to English since selector is removed
+                plan_json = generate_morning_plan(family, guest_count, language="English")
                 
                 if "error" in plan_json:
                     st.error(f"AI Error: {plan_json['error']}")
@@ -410,23 +407,23 @@ elif choice == "Morning Rush":
                     st.session_state['generated_plan'] = plan_json
                     st.rerun()
 
-    # 5. Display the Plan (If it exists in session state)
+    # 4. Display Plan & Selection UI
     if 'generated_plan' in st.session_state:
         plan_data = st.session_state['generated_plan']
         st.divider()
         st.subheader("🍳 Select Meals to Cook")
         
-        # START OF FORM - CRITICAL INDENTATION
         with st.form("meal_selection_form"):
             selections = {}
-            
+            nutrition_summary = []
+
             for person in plan_data.get('plan', []):
                 st.markdown(f"### 👤 {person['member_name']}")
                 
                 for meal in person.get('meals', []):
                     st.write(f"**{meal['type']}**")
                     
-                    # Create radio options for Dish A vs Dish B
+                    # Options for Radio Button
                     options = meal.get('options', [])
                     opt_names = [f"{opt['dish_name']} ({opt['calories']} cal, {opt['protein']})" for opt in options]
                     opt_names.append("❌ Skip / Eating Out")
@@ -437,41 +434,53 @@ elif choice == "Morning Rush":
                         key=f"{person['member_name']}_{meal['type']}"
                     )
                     
-                    # Store the selected object for processing later
+                    # Logic to capture selection
                     if "Skip" not in choice:
                         idx = opt_names.index(choice)
                         selected_dish_obj = options[idx]
+                        
+                        # Store for Cooking
                         selections[f"{person['member_name']}_{meal['type']}"] = selected_dish_obj
+                        
+                        # Store for Nutrition Dashboard (Step 5 Goal)
+                        nutrition_summary.append({
+                            "Name": person['member_name'],
+                            "Meal": meal['type'],
+                            "Dish": selected_dish_obj['dish_name'],
+                            "Calories": selected_dish_obj['calories'],
+                            "Protein": selected_dish_obj['protein']
+                        })
                 
                 st.divider()
+
+# --- STEP 5: NUTRITION DASHBOARD (Live Update) ---
+            if nutrition_summary:
+                st.markdown("### 📊 Nutrition Dashboard (Preview)")
+                nut_df = pd.DataFrame(nutrition_summary)
+                
+                # FIX: Changed use_container_width=True to width="stretch"
+                st.dataframe(nut_df, width="stretch")
+                
+                total_cal = nut_df['Calories'].sum() if 'Calories' in nut_df.columns else 0
+                st.metric("Total Morning Calories (Family)", f"{total_cal} kcal")
             
-            # THE SUBMIT BUTTON - MUST BE INDENTED INSIDE 'with st.form'
-# THE COOK BUTTON
+            # --- STEP 3 & 4: COOK & DEDUCT ---
             submitted = st.form_submit_button("🔥 Cook Selected Meals & Deduct Inventory", type="primary")
             
             if submitted:
                 meals_to_cook = []
-                summary_text = []
-                
-                # 1. Gather Selections
+                # Gather objects
                 for key, selected_obj in selections.items():
                     meals_to_cook.append(selected_obj)
-                    # Create a nice summary string e.g. "Rohan (Breakfast): Masala Oats"
-                    person_name = key.split('_')[0]
-                    meal_type = key.split('_')[1]
-                    summary_text.append(f"**{person_name}** ({meal_type}): {selected_obj['dish_name']}")
                 
                 if not meals_to_cook:
                     st.warning("⚠️ No meals selected!")
                 else:
-                    # 2. Show Summary of what we are trying to cook
-                    st.info("👨‍🍳 **Cooking:** " + "  |  ".join(summary_text))
-                    
-                    # 3. Call Backend
+                    # Execute Backend Logic
                     with st.spinner("🍳 Checking Pantry & Deducting Stock..."):
                         result = process_meal_deduction(meals_to_cook)
                     
-                    # 4. Show Report
+                    # Display Reports
                     if result.get("success"):
                         c1, c2 = st.columns(2)
                         
@@ -490,6 +499,10 @@ elif choice == "Morning Rush":
                                     st.error(line)
                             else:
                                 st.write("All ingredients were available!")
+                        
+                        # Optional: Clear plan after cooking
+                        # del st.session_state['generated_plan']
+                        # st.rerun()
                     else:
                         st.error(f"Database Error: {result.get('error')}")
 # 4. Leftover Wizard
