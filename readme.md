@@ -56,35 +56,31 @@ The system relies on a relational database structure designed to ensure data int
 git clone [https://github.com/thevinay1712/pantryapp.git](https://github.com/thevinay1712/pantryapp.git)
 cd pantryapp
 ```
-2. Install Dependencies
+### 2. Install Dependencies
 ```Bash
 
 pip install -r requirements.txt
 ```
-3. Environment Configuration
-```
+### 3. Environment Configuration
 Create a .env file in the root directory with the following credentials:
 Ini, TOML
-
+```
 DB_HOST=localhost
 DB_USER=root
 DB_PASSWORD=your_password
 DB_NAME=aahar_sathi_db
 GROQ_API_KEY=your_groq_api_key
 ```
-4. Database Initialization
-```
+### 4. Database Initialization
 Before running the application, ensure the MySQL service is running. The application includes an automated setup script.
+   Run the provided reset script or manually execute setup.sql in your MySQL client to create the necessary tables.
+   The system creates a default admin account:
+```       
+Username: admin
 
-    Run the provided reset script or manually execute setup.sql in your MySQL client to create the necessary tables.
-
-    The system creates a default admin account:
-
-        Username: admin
-
-        Password: password123
+Password: password123
 ```
-5. How to Run the Application
+### 5. How to Run the Application
 Once the database is initialized and dependencies are installed, execute the following command in your terminal:
 ```
 Bash
@@ -92,18 +88,18 @@ Bash
 streamlit run app.py
 ```
 The application will launch in your default web browser at http://localhost:8501.
-Usage Guidelines
+### Usage Guidelines
 
-    Dashboard: Upon logging in, the Command Center provides a high-level overview of inventory health.
+ Dashboard: Upon logging in, the Command Center provides a high-level overview of inventory health.
 
-    Catalog Entry: Use this module to register new ingredients. The AI Auto-Fill feature can populate shelf-life estimates.
+ Catalog Entry: Use this module to register new ingredients. The AI Auto-Fill feature can populate shelf-life estimates.
 
-    Morning Rush: Configure family schedules in "Family Setup" first. Then, use this module to generate a conflict-free cooking plan.
+ Morning Rush: Configure family schedules in "Family Setup" first. Then, use this module to generate a conflict-free cooking plan.
 
-    Bill Scanner: Upload an image of a grocery receipt to bulk-import items. Verify the extracted data before committing to the database.
+ Bill Scanner: Upload an image of a grocery receipt to bulk-import items. Verify the extracted data before committing to the database.
 
-Security
+### Security
 
-    All user passwords are securely hashed using SHA-256 before storage.
+ All user passwords are securely hashed using SHA-256 before storage.
 
-    Database connections use environment variables to prevent credential exposure in the source code.
+ Database connections use environment variables to prevent credential exposure in the source code.
