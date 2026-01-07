@@ -8,7 +8,8 @@ from backend_logic import (
     get_ai_item_details, seed_historical_data, get_item_forecast,
     get_footfall_forecast,
     update_family_member, delete_family_member,
-    process_meal_deduction
+    process_meal_deduction,
+    run_user_migration,verify_login,create_new_user
 )
 
 # --- PAGE CONFIG ---
@@ -64,22 +65,70 @@ def load_custom_css(is_dark_mode):
         </style>
     """, unsafe_allow_html=True)
 
-# --- AUTHENTICATION ---
+# --- AUTHENTICATION & STARTUP ---
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 
+# Ensure DB User table exists
+if 'db_checked' not in st.session_state:
+    run_user_migration()
+    st.session_state['db_checked'] = True
+
 def login_screen():
-    c1, c2, c3 = st.columns([1, 1, 1])
+    # Modern, centered login card using columns
+    c1, c2, c3 = st.columns([1, 2, 1])
+    
     with c2:
-        st.markdown("<br><br><h2 style='text-align: center;'>Smart Pantry and Kitchen Manager</h2>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; color: grey;'>WE SAVE FOOD</p>", unsafe_allow_html=True)
-        with st.container(border=True):
-            user = st.text_input("Username")
-            pwd = st.text_input("Password", type="password")
-            if st.button("Sign In", type="primary", use_container_width=True):
-                if user == "admin" and pwd == "password123":
-                    st.session_state.logged_in = True
-                    st.rerun()
-                else: st.error("Invalid Credentials")
+        st.markdown("""
+            <div style='text-align: center; padding-bottom: 20px;'>
+                <h1 style='font-family: "Inter", sans-serif; font-weight: 700; color: #4facfe;'>Aahar Sathi</h1>
+                <p style='color: #888; font-size: 14px;'>We Save Food!!</p>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # Tabs for Public Access (Login vs Register)
+        tab_login, tab_register = st.tabs(["🔑 Login", "📝 Register"])
+        
+        # --- TAB 1: LOGIN ---
+        with tab_login:
+            with st.form("login_form"):
+                user = st.text_input("Username", placeholder="Enter username")
+                pwd = st.text_input("Password", type="password", placeholder="Enter password")
+                
+                submit = st.form_submit_button("Sign In", type="primary", use_container_width=True)
+                
+                if submit:
+                    # New verify_login returns (Bool, Message_or_Dict)
+                    success, response = verify_login(user, pwd)
+                    
+                    if success:
+                        st.session_state.logged_in = True
+                        st.session_state.user_info = response
+                        st.success(f"Welcome back, {response['Full_Name']}!")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        # Now shows "User does not exist" or "Incorrect Password"
+                        st.error(f"Login Failed: {response}")
+
+        # --- TAB 2: PUBLIC REGISTRATION ---
+        with tab_register:
+            st.markdown("##### New here? Create an account.")
+            with st.form("register_form"):
+                new_user = st.text_input("Choose a Username")
+                new_pass = st.text_input("Choose a Password", type="password")
+                new_name = st.text_input("Your Full Name")
+                
+                reg_submit = st.form_submit_button("Create Account", use_container_width=True)
+                
+                if reg_submit:
+                    if new_user and new_pass and new_name:
+                        success, msg = create_new_user(new_user, new_pass, new_name)
+                        if success:
+                            st.success(f"✅ Account created for {new_user}! Please switch to the 'Login' tab.")
+                        else:
+                            st.error(f"❌ Error: {msg}")
+                    else:
+                        st.warning("⚠️ Please fill in all fields.")
 
 if not st.session_state.logged_in:
     login_screen()
@@ -112,43 +161,44 @@ with st.sidebar:
 def initialize_database():
     try:
         conn = get_db_connection()
-        if not conn: st.error("❌ Cannot connect to Database."); return
+        if not conn: 
+            st.error("❌ Cannot connect to Database. Check .env settings.")
+            return
+            
         cursor = conn.cursor()
-        with open('setup.sql', 'r') as f: sql_script = f.read()
+        with open('setup.sql', 'r') as f: 
+            sql_script = f.read()
+            
+        # Split strictly by semicolon
         sql_commands = [cmd.strip() for cmd in sql_script.split(';') if cmd.strip()]
+        
         prog = st.progress(0)
+        error_log = []
+        
         for i, cmd in enumerate(sql_commands):
-            try: cursor.execute(cmd)
-            except: pass
+            try: 
+                cursor.execute(cmd)
+            except Exception as e:
+                # Log errors but continue (some drops might fail if table doesn't exist)
+                if "DROP" not in cmd: 
+                    error_log.append(f"Cmd {i} Error: {str(e)}")
             prog.progress((i + 1) / len(sql_commands))
-        conn.commit(); conn.close()
-        st.success("✅ Database Reset Successfully! Pantry is empty."); st.rerun()
-    except Exception as e: st.error(f"Error: {e}")
-
-def run_phase4_migration():
-    conn = get_db_connection()
-    if not conn: return
-    cursor = conn.cursor()
-    for q in [
-        "ALTER TABLE TBL_LOGS ADD COLUMN Unit_Price DECIMAL(10,2) DEFAULT 0.00;",
-        "ALTER TABLE TBL_LOGS ADD COLUMN Vendor_Name VARCHAR(100);",
-        "ALTER TABLE TBL_ITEM_CATALOG ADD COLUMN Last_Vendor VARCHAR(100);",
-        "ALTER TABLE TBL_ITEM_CATALOG ADD COLUMN Last_Price DECIMAL(10,2);"
-    ]:
-        try: cursor.execute(q)
-        except: pass
-    try:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS TBL_FOOTFALL (
-                Footfall_ID INT AUTO_INCREMENT PRIMARY KEY,
-                Log_Date DATETIME DEFAULT CURRENT_TIMESTAMP,
-                Customer_Count INT,
-                Meal_Type VARCHAR(50)
-            )
-        """)
-    except Exception as e: st.error(f"Migration Error: {e}")
-    conn.commit(); conn.close()
-    st.success("✅ Database upgraded to Phase 4!")
+            
+        conn.commit()
+        conn.close()
+        
+        if error_log:
+            st.warning("⚠️ Database Reset completed with warnings:")
+            for err in error_log:
+                st.write(err)
+        else:
+            st.success("✅ Database Reset Successfully! Login with admin/password123")
+            
+        time.sleep(2)
+        st.rerun()
+        
+    except Exception as e: 
+        st.error(f"Critical Error: {e}")
 
 def safe_float(val, default=0.0):
     try: return float(val)

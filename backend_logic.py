@@ -7,7 +7,7 @@ import random
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from groq import Groq
-
+import hashlib
 # 1. Load environment variables
 load_dotenv()
 
@@ -431,3 +431,99 @@ def process_meal_deduction(selected_meals_list):
     finally:
         if cursor: cursor.close()
         conn.close()
+
+# --- USER MANAGEMENT & SECURITY ---
+
+def run_user_migration():
+    """Creates the Users table and seeds the default admin."""
+    conn = get_db_connection()
+    if not conn: 
+        print("❌ DB Connection Failed during Migration")
+        return
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS TBL_USERS (
+                User_ID INT AUTO_INCREMENT PRIMARY KEY,
+                Username VARCHAR(50) UNIQUE NOT NULL,
+                Password_Hash VARCHAR(64) NOT NULL,
+                Full_Name VARCHAR(100),
+                Role VARCHAR(20) DEFAULT 'User',
+                Created_At DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Check if admin exists
+        cursor.execute("SELECT User_ID FROM TBL_USERS WHERE Username = 'admin'")
+        if not cursor.fetchone():
+            default_hash = hashlib.sha256("password123".encode()).hexdigest()
+            cursor.execute(
+                "INSERT INTO TBL_USERS (Username, Password_Hash, Full_Name, Role) VALUES (%s, %s, %s, %s)",
+                ('admin', default_hash, 'System Administrator', 'Admin')
+            )
+            print("✅ Default admin user created.")
+            
+        conn.commit()
+    except Exception as e:
+        print(f"❌ Migration Error: {e}")
+    finally:
+        if cursor: cursor.close()
+        conn.close()
+
+def verify_login(username, password):
+    """
+    Verifies credentials against the database.
+    Returns: (Success_Bool, Message_or_UserDict)
+    """
+    # 1. Clean inputs
+    clean_user = username.strip()
+    clean_pass = password.strip()
+    
+    conn = get_db_connection()
+    if not conn:
+        return False, "Database Connection Failed"
+
+    try:
+        cursor = conn.cursor(dictionary=True) # Use dictionary cursor for easier access
+        
+        # 2. Check if user exists first (Debugging Step)
+        cursor.execute("SELECT User_ID, Password_Hash, Full_Name, Role FROM TBL_USERS WHERE Username=%s", (clean_user,))
+        user_record = cursor.fetchone()
+        
+        if not user_record:
+            return False, "User does not exist."
+            
+        # 3. Check Hash
+        input_hash = hashlib.sha256(clean_pass.encode()).hexdigest()
+        stored_hash = user_record['Password_Hash']
+        
+        if input_hash == stored_hash:
+            return True, user_record
+        else:
+            return False, "Incorrect Password."
+
+    except Exception as e:
+        return False, f"Login Error: {str(e)}"
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+def create_new_user(username, password, full_name, role="User"):
+    """Creates a new user with a hashed password."""
+    clean_user = username.strip()
+    clean_pass = password.strip()
+    clean_name = full_name.strip()
+
+    # Check if username exists
+    check = fetch_data("SELECT User_ID FROM TBL_USERS WHERE Username=%s", (clean_user,))
+    if not check.empty:
+        return False, "Username already exists."
+        
+    pwd_hash = hashlib.sha256(clean_pass.encode()).hexdigest()
+    
+    success, msg = execute_query(
+        "INSERT INTO TBL_USERS (Username, Password_Hash, Full_Name, Role) VALUES (%s, %s, %s, %s)",
+        (clean_user, pwd_hash, clean_name, role)
+    )
+    return success, msg
