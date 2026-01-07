@@ -231,13 +231,21 @@ def scan_bill_with_groq(image_bytes):
 
 def get_inventory_with_ids():
     """Fetches inventory formatted for AI context with IDs."""
-    df = fetch_data("SELECT Item_ID, Item_Name, Current_Quantity, Standard_Unit FROM TBL_PANTRY_STOCK s JOIN TBL_ITEM_CATALOG c ON s.Item_ID = c.Item_ID")
+    # CRITICAL FIX: Changed 'Item_ID' to 's.Item_ID' to avoid "Column Ambiguous" error
+    df = fetch_data("""
+        SELECT s.Item_ID, c.Item_Name, s.Current_Quantity, c.Standard_Unit 
+        FROM TBL_PANTRY_STOCK s 
+        JOIN TBL_ITEM_CATALOG c ON s.Item_ID = c.Item_ID
+        WHERE s.Current_Quantity > 0
+    """)
+    
     if df.empty: return "Inventory is Empty."
     
     inventory_str = ""
     for _, row in df.iterrows():
         inventory_str += f"- ID {row['Item_ID']}: {row['Item_Name']} ({row['Current_Quantity']} {row['Standard_Unit']})\n"
     return inventory_str
+# --- STEP 2: SMART AI PLANNING (STRICT INVENTORY FIRST) ---
 
 def generate_morning_plan(family_df, guest_count=0, language="English"):
     if not client: return {"error": "API Key missing"}
@@ -253,27 +261,27 @@ def generate_morning_plan(family_df, guest_count=0, language="English"):
         health = f"({row['Health_Condition']})" if row['Health_Condition'] != "None" else ""
         family_context += f"- {row['Name']}: {leave}, {lunch} {health}\n"
 
-    # 3. The Strict JSON Prompt
+    # 3. The Strict "Inventory-First" Prompt
     prompt = f"""
-    You are a Smart Kitchen Logic Engine.
+    You are a Strict Kitchen Inventory Manager.
     
-    INVENTORY (ID: Item Name (Qty Available)):
+    CURRENT PANTRY STOCK (Format: ID: Name):
     {inventory_context}
     
-    FAMILY MEMBERS:
+    FAMILY:
     {family_context}
     (Guests: {guest_count})
     
     TASK:
-    Generate a meal plan for each person.
+    Create a meal plan (Breakfast & Lunch) strictly using the CURRENT PANTRY STOCK.
     
-    CRITICAL INGREDIENT RULES:
-    1. Look for ingredients in the INVENTORY list above.
-    2. If the ingredient EXISTS, use its exact 'ID' from the list.
-    3. If the ingredient is NOT in the list, you MUST set 'id': -1.
-    4. Do not make up IDs.
+    CRITICAL RULES:
+    1. **DO NOT HALLUCINATE RECIPES.** If the pantry only has 'Rice' and 'Milk', suggest 'Rice Pudding', NOT 'Oatmeal'.
+    2. **CHECK IDs:** You must include the `id` from the list above for every ingredient.
+    3. **MISSING ITEMS:** If a recipe *absolutely* needs an item not in stock (e.g., Oil, Salt), set `id: -1`.
+    4. **PRIORITY:** Recipes must use >80% items that actually exist in the stock list.
     
-    REQUIRED JSON STRUCTURE:
+    JSON STRUCTURE:
     {{
       "plan": [
         {{
@@ -283,12 +291,12 @@ def generate_morning_plan(family_df, guest_count=0, language="English"):
               "type": "Breakfast",
               "options": [
                 {{
-                  "dish_name": "Masala Oats",
-                  "calories": 300,
-                  "protein": "10g",
+                  "dish_name": "Rice Porridge (Ganji)", 
+                  "calories": 250,
+                  "protein": "5g",
                   "ingredients": [
-                    {{ "id": 101, "name": "Oats", "qty": 0.1, "unit": "kg" }},
-                    {{ "id": -1, "name": "Blueberries", "qty": 0.05, "unit": "kg" }} 
+                    {{ "id": 12, "name": "Rice", "qty": 0.1, "unit": "kg" }}, 
+                    {{ "id": 15, "name": "Milk", "qty": 0.2, "unit": "L" }}
                   ]
                 }}
               ]
@@ -303,12 +311,11 @@ def generate_morning_plan(family_df, guest_count=0, language="English"):
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0,
+            temperature=0, # Zero temp forces it to be logical, not creative
             response_format={"type": "json_object"}
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e: return {"error": str(e)}
-
 # Getting family schedule
 def get_family_schedule():
     """Fetches family members sorted by who leaves home earliest."""

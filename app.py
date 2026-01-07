@@ -390,8 +390,18 @@ elif choice == "Morning Rush":
         st.divider()
 
         # 4. Generate AI Plan
+# 4. Generate AI Plan
         if st.button("✨ Create Cooking Plan", type="primary"):
-            with st.spinner("🤖 Chef AI is analyzing inventory & nutrition..."):
+            
+            # --- DEBUG START: Check what the AI actually sees ---
+            # (You can remove this block later once it works)
+            from backend_logic import get_inventory_with_ids
+            raw_inv = get_inventory_with_ids()
+            with st.expander("🕵️ Debug: What is in the Pantry?"):
+                st.text(raw_inv)
+            # --- DEBUG END ---
+
+            with st.spinner("🤖 Chef AI is matching recipes to your specific inventory..."):
                 plan_json = generate_morning_plan(family, guest_count, lang)
                 
                 if "error" in plan_json:
