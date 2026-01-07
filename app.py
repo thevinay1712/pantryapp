@@ -5,9 +5,9 @@ import time
 from datetime import datetime
 from backend_logic import (
     fetch_data, execute_query, get_db_connection, scan_bill_with_groq, 
-    get_ai_item_details, 
-    seed_historical_data, get_item_forecast,
-    get_footfall_forecast
+    get_ai_item_details, seed_historical_data, get_item_forecast,
+    get_footfall_forecast,
+    update_family_member, delete_family_member 
 )
 
 # --- PAGE CONFIG ---
@@ -222,60 +222,140 @@ if choice == "Dashboard":
     except Exception as e: st.error(f"⚠️ Dashboard Error: {e}")
 
 #2. Family setup
+# 2. FAMILY CONFIGURATION (IMPROVED)
 elif choice == "Family Setup":
     st.title("🏡 Family Configuration")
-    st.markdown("Set up your family members and their schedules once.")
-    
-    # Fetch existing members
-    members = fetch_data("""
+    st.markdown("Manage your family members and their schedules.")
+
+    # Create Tabs for better organization
+    tab1, tab2 = st.tabs(["📋 Member List & Add New", "✏️ Edit & Delete"])
+
+    # --- TAB 1: VIEW & ADD ---
+    with tab1:
+        # Fetch existing members
+        members = fetch_data("""
             SELECT Member_ID, Name, Role, Health_Condition, 
                 DATE_FORMAT(Leave_Time, '%H:%i') as Leave_Time, 
                 Needs_Packed_Lunch 
             FROM TBL_FAMILY_MEMBERS 
             ORDER BY Leave_Time ASC
         """)
-    
-    # --- MISSING PART ADDED BELOW ---
-    if not members.empty:
-        st.subheader("Current Family Members")
-        st.dataframe(members, width=1000)
-    else:
-        st.info("No family members added yet.")
-    # --------------------------------
-    
-    st.divider()
-    st.subheader("Add New Member")
+        
+        if not members.empty:
+            st.dataframe(members, use_container_width=True)
+        else:
+            st.info("No family members added yet.")
 
-    
-    with st.form("add_member_form"):
-        c1, c2 = st.columns(2)
-        name = c1.text_input("Name (e.g., Rohan)")
-        role = c2.selectbox("Role", ["Father", "Mother", "Grandparent", "Son", "Daughter", "House Help"])
+        st.divider()
+        st.subheader("Add New Member")
         
-        c3, c4 = st.columns(2)
-        health = c3.selectbox("Health Condition", ["None", "Diabetes", "High BP", "Cholesterol", "Allergy"])
-        pack_lunch = c4.checkbox("Needs Packed Lunch?")
-        
-        c5, c6 = st.columns(2)
-        # Use simple text for time to avoid complexity, or strict time input
-        leave_time = c5.time_input("Leaves Home At (Leave empty if stays home)", value=None)
-        
-        if st.form_submit_button("Save Member"):
-            l_time_str = leave_time.strftime('%H:%M:%S') if leave_time else None
+        with st.form("add_member_form"):
+            c1, c2 = st.columns(2)
+            name = c1.text_input("Name (e.g., Rohan)")
+            role = c2.selectbox("Role", ["Father", "Mother", "Grandparent", "Son", "Daughter", "House Help"])
             
-            # --- UPDATED CODE START ---
-            success, message = execute_query(
-                "INSERT INTO TBL_FAMILY_MEMBERS (Name, Role, Health_Condition, Leave_Time, Needs_Packed_Lunch) VALUES (%s, %s, %s, %s, %s)",
-                (name, role, health, l_time_str, pack_lunch)
-            )
+            c3, c4 = st.columns(2)
+            health = c3.selectbox("Health Condition", ["None", "Diabetes", "High BP", "Cholesterol", "Allergy"])
+            pack_lunch = c4.checkbox("Needs Packed Lunch?")
             
-            if success:
-                st.success(f"✅ {name} added to family!")
-                time.sleep(1) # Give a moment to read the message
-                st.rerun()
+            c5, c6 = st.columns(2)
+            leave_time = c5.time_input("Leaves Home At (Leave empty if stays home)", value=None)
+            
+            if st.form_submit_button("Save Member", type="primary"):
+                l_time_str = leave_time.strftime('%H:%M:%S') if leave_time else None
+                
+                success, message = execute_query(
+                    "INSERT INTO TBL_FAMILY_MEMBERS (Name, Role, Health_Condition, Leave_Time, Needs_Packed_Lunch) VALUES (%s, %s, %s, %s, %s)",
+                    (name, role, health, l_time_str, pack_lunch)
+                )
+                
+                if success:
+                    st.success(f"✅ {name} added to family!")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error(f"❌ Database Error: {message}")
+
+    # --- TAB 2: EDIT & DELETE ---
+# --- TAB 2: EDIT & DELETE ---
+    with tab2:
+        st.subheader("Modify Existing Member")
+        
+        # reload members to ensure list is fresh
+        members_refresh = fetch_data("SELECT Member_ID, Name FROM TBL_FAMILY_MEMBERS ORDER BY Name")
+        
+        if members_refresh.empty:
+            st.warning("No members to edit. Go to the 'Add New' tab first.")
+        else:
+            # 1. Select Member
+            member_names = members_refresh['Name'].tolist()
+            selected_name = st.selectbox("Select Person to Edit", member_names)
+            
+            # CRITICAL FIX: Ensure ID is a standard Python int, not a Numpy int
+            raw_id = members_refresh[members_refresh['Name'] == selected_name].iloc[0]['Member_ID']
+            selected_id = int(raw_id)
+            
+            # 2. Fetch Current Details for this person
+            details_df = fetch_data("SELECT * FROM TBL_FAMILY_MEMBERS WHERE Member_ID = %s", (selected_id,))
+            
+            if not details_df.empty:
+                curr = details_df.iloc[0]
+                
+                # Parse existing time
+                current_time_val = None
+                if pd.notnull(curr['Leave_Time']):
+                    try:
+                        # Handle timedelta (e.g., 07:30:00)
+                        seconds = curr['Leave_Time'].total_seconds()
+                        current_time_val = (datetime.min + timedelta(seconds=seconds)).time()
+                    except:
+                        try:
+                            # Handle string format
+                            current_time_val = datetime.strptime(str(curr['Leave_Time']), "%H:%M:%S").time()
+                        except:
+                            current_time_val = None
+
+                # 3. Edit Form
+                with st.form("edit_member_form"):
+                    ec1, ec2 = st.columns(2)
+                    new_name = ec1.text_input("Name", value=curr['Name'])
+                    
+                    # Handle Role Index
+                    roles = ["Father", "Mother", "Grandparent", "Son", "Daughter", "House Help"]
+                    role_idx = roles.index(curr['Role']) if curr['Role'] in roles else 0
+                    new_role = ec2.selectbox("Role", roles, index=role_idx)
+                    
+                    ec3, ec4 = st.columns(2)
+                    # Handle Health Index
+                    healths = ["None", "Diabetes", "High BP", "Cholesterol", "Allergy"]
+                    h_idx = healths.index(curr['Health_Condition']) if curr['Health_Condition'] in healths else 0
+                    new_health = ec3.selectbox("Health Condition", healths, index=h_idx)
+                    
+                    # Checkbox
+                    new_pack_lunch = ec4.checkbox("Needs Packed Lunch?", value=bool(curr['Needs_Packed_Lunch']))
+                    
+                    ec5, ec6 = st.columns(2)
+                    new_leave_time = ec5.time_input("Leaves Home At", value=current_time_val)
+
+                    st.markdown("---")
+                    col_update, col_delete = st.columns([1, 1])
+                    
+                    with col_update:
+                        if st.form_submit_button("💾 Update Details"):
+                            l_time_str = new_leave_time.strftime('%H:%M:%S') if new_leave_time else None
+                            update_family_member(selected_id, new_name, new_role, new_health, l_time_str, new_pack_lunch)
+                            st.success("Updated successfully!")
+                            time.sleep(1)
+                            st.rerun()
+
+                    with col_delete:
+                        if st.form_submit_button("🗑️ Delete Member", type="primary"):
+                            delete_family_member(selected_id)
+                            st.warning(f"Deleted {selected_name}.")
+                            time.sleep(1)
+                            st.rerun()
             else:
-                st.error(f"❌ Database Error: {message}")
-            # --- UPDATED CODE END ---
+                st.error("Could not fetch details. Please check database connection.")
 
 # 3. Morning Rush
 elif choice == "Morning Rush":

@@ -376,3 +376,18 @@ def suggest_leftover_recipe(leftover_item, language="English"):
             temperature=0.7
         ).choices[0].message.content
     except Exception as e: return str(e)
+
+# --- FAMILY MANAGEMENT HELPERS (NEW) ---
+
+def update_family_member(member_id, name, role, health, leave_time, pack_lunch):
+    """Updates an existing family member's details."""
+    return execute_query(
+        """UPDATE TBL_FAMILY_MEMBERS 
+           SET Name=%s, Role=%s, Health_Condition=%s, Leave_Time=%s, Needs_Packed_Lunch=%s 
+           WHERE Member_ID=%s""",
+        (name, role, health, leave_time, pack_lunch, member_id)
+    )
+
+def delete_family_member(member_id):
+    """Permanently removes a family member."""
+    return execute_query("DELETE FROM TBL_FAMILY_MEMBERS WHERE Member_ID=%s", (member_id,))
