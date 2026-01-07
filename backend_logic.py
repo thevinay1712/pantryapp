@@ -203,54 +203,6 @@ def get_item_forecast(item_id, days_ahead=7):
         return {"success": True, "forecast_df": next_days, "total_demand": round(total_demand, 2), "trend_chart": forecast[['ds', 'yhat']]}
     except Exception as e: return {"error": f"Model Error: {str(e)}"}
 
-# --- SMART INVENTORY (PHASE 3) ---
-
-def process_smart_deduction(bom_list):
-    deduction_report = []
-    missing_items = []
-    conn = get_db_connection()
-    if not conn: return {"error": "DB Connection Failed"}
-    
-    try:
-        cursor = conn.cursor()
-        for item in bom_list:
-            ai_name = item['item_name']
-            needed_qty = float(item['quantity'])
-            
-            # Using LIKE matching to find the item in DB
-            cursor.execute("SELECT Item_ID, Item_Name, Standard_Unit FROM TBL_ITEM_CATALOG WHERE Item_Name LIKE %s LIMIT 1", (f"%{ai_name}%",))
-            match = cursor.fetchone()
-            
-            if match:
-                item_id, db_name, unit = match
-                cursor.execute("SELECT Current_Quantity FROM TBL_PANTRY_STOCK WHERE Item_ID = %s", (item_id,))
-                stock_res = cursor.fetchone()
-                
-                if stock_res:
-                    current_qty = float(stock_res[0])
-                    actual_deduct = min(current_qty, needed_qty)
-                    new_qty = current_qty - actual_deduct
-                    status = f"Partial (Needed {needed_qty})" if needed_qty > current_qty else "Success"
-                    
-                    if actual_deduct > 0:
-                        cursor.execute("INSERT INTO TBL_LOGS (Item_ID, Action_Type, Quantity, Vendor_Name) VALUES (%s, 'CONSUME', %s, 'AI Chef Menu')", (item_id, actual_deduct))
-                        
-                        if new_qty == 0: cursor.execute("DELETE FROM TBL_PANTRY_STOCK WHERE Item_ID = %s", (item_id,))
-                        else: cursor.execute("UPDATE TBL_PANTRY_STOCK SET Current_Quantity = %s WHERE Item_ID = %s", (new_qty, item_id))
-                        
-                        deduction_report.append({"Item": db_name, "Deducted": actual_deduct, "Unit": unit, "Status": status})
-                else: missing_items.append(f"{db_name} (No Stock)")
-            else: missing_items.append(f"{ai_name} (Unknown Item)")
-        
-        conn.commit()
-        return {"success": True, "report": deduction_report, "missing": missing_items}
-    except Exception as e:
-        conn.rollback()
-        return {"success": False, "error": str(e)}
-    finally:
-        if cursor: cursor.close()
-        conn.close()
-
 # --- AI HELPERS ---
 
 def get_ai_item_details(item_name):
@@ -275,79 +227,95 @@ def scan_bill_with_groq(image_bytes):
         return json.loads(client.chat.completions.create(model="meta-llama/llama-4-scout-17b-16e-instruct", messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}], temperature=0, response_format={"type": "json_object"}).choices[0].message.content)
     except Exception as e: return {"error": str(e)}
 
-def generate_morning_plan(inventory_list, family_df, guest_count=0, language="English"):
-    if not client: return "Error: API Key missing"
+# --- STEP 2: SMART AI PLANNING (CORRECTED) ---
+
+def get_inventory_with_ids():
+    """Fetches inventory formatted for AI context with IDs."""
+    # CRITICAL FIX: Changed 'Item_ID' to 's.Item_ID' to avoid "Column Ambiguous" error
+    df = fetch_data("""
+        SELECT s.Item_ID, c.Item_Name, s.Current_Quantity, c.Standard_Unit 
+        FROM TBL_PANTRY_STOCK s 
+        JOIN TBL_ITEM_CATALOG c ON s.Item_ID = c.Item_ID
+        WHERE s.Current_Quantity > 0
+    """)
     
-    # 1. Construct Family Context
+    if df.empty: return "Inventory is Empty."
+    
+    inventory_str = ""
+    for _, row in df.iterrows():
+        inventory_str += f"- ID {row['Item_ID']}: {row['Item_Name']} ({row['Current_Quantity']} {row['Standard_Unit']})\n"
+    return inventory_str
+# --- STEP 2: SMART AI PLANNING (STRICT INVENTORY FIRST) ---
+
+def generate_morning_plan(family_df, guest_count=0, language="English"):
+    if not client: return {"error": "API Key missing"}
+    
+    # 1. Get Inventory with IDs
+    inventory_context = get_inventory_with_ids()
+    
+    # 2. Family Context
     family_context = ""
-    total_people = len(family_df) + guest_count
-    
     for _, row in family_df.iterrows():
-        lunch_status = "Needs Packed Lunch" if row['Needs_Packed_Lunch'] else "Eats Lunch at Home"
-        leave_status = f"Leaves at {row['Leave_Time']}" if row['Leave_Time'] else "Stays Home"
-        health = f"(Health: {row['Health_Condition']})" if row['Health_Condition'] != "None" else ""
-        
-        family_context += f"- {row['Name']} ({row['Role']}): {leave_status}, {lunch_status} {health}\n"
+        lunch = "Needs Lunch Box" if row['Needs_Packed_Lunch'] else "Eats Lunch at Home"
+        leave = f"Leaves {row['Leave_Time']}" if row['Leave_Time'] else "Stays Home"
+        health = f"({row['Health_Condition']})" if row['Health_Condition'] != "None" else ""
+        family_context += f"- {row['Name']}: {leave}, {lunch} {health}\n"
 
-    # 2. Guest Logic
-    guest_context = f"Note: There are {guest_count} extra guests today." if guest_count > 0 else ""
-
-    # 3. The Prompt
+    # 3. The Strict "Inventory-First" Prompt
     prompt = f"""
-    You are a Smart Indian Kitchen Assistant.
+    You are a Strict Kitchen Inventory Manager.
     
-    CURRENT INVENTORY:
-    {inventory_list}
+    CURRENT PANTRY STOCK (Format: ID: Name):
+    {inventory_context}
     
-    FAMILY SCHEDULE (Who leaves first needs food first!):
+    FAMILY:
     {family_context}
-    {guest_context}
+    (Guests: {guest_count})
     
     TASK:
-    Plan the 'Morning Rush' (Breakfast & Lunch).
-    1. Suggest ONE Breakfast dish and ONE Lunch dish that uses available inventory.
-    2. Prioritize the person leaving earliest (e.g., if Son leaves at 7:30, food must be ready by 7:00).
-    3. Suggest modifications for Health Issues (e.g., "Less sugar for Dad").
-    4. Calculate Total Quantities (e.g., "Total Idlis: 12 + 4 for guests = 16").
+    Create a meal plan (Breakfast & Lunch) strictly using the CURRENT PANTRY STOCK.
     
-    OUTPUT FORMAT:
-    Output the response in {language} language. Use simple, clear bullet points.
+    CRITICAL RULES:
+    1. **DO NOT HALLUCINATE RECIPES.** If the pantry only has 'Rice' and 'Milk', suggest 'Rice Pudding', NOT 'Oatmeal'.
+    2. **CHECK IDs:** You must include the `id` from the list above for every ingredient.
+    3. **MISSING ITEMS:** If a recipe *absolutely* needs an item not in stock (e.g., Oil, Salt), set `id: -1`.
+    4. **PRIORITY:** Recipes must use >80% items that actually exist in the stock list.
+    
+    JSON STRUCTURE:
+    {{
+      "plan": [
+        {{
+          "member_name": "Rohan",
+          "meals": [
+            {{
+              "type": "Breakfast",
+              "options": [
+                {{
+                  "dish_name": "Rice Porridge (Ganji)", 
+                  "calories": 250,
+                  "protein": "5g",
+                  "ingredients": [
+                    {{ "id": 12, "name": "Rice", "qty": 0.1, "unit": "kg" }}, 
+                    {{ "id": 15, "name": "Milk", "qty": 0.2, "unit": "L" }}
+                  ]
+                }}
+              ]
+            }}
+          ]
+        }}
+      ]
+    }}
     """
     
     try: 
-        return client.chat.completions.create(
+        response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
-        ).choices[0].message.content
-    except Exception as e: return str(e)
-
-# UPDATED FUNCTION WITH INVENTORY CONTEXT
-def get_menu_ingredients_for_deduction(menu, customers, inventory_list=""):
-    if not client: return {"error": "Key missing"}
-    
-    # Enhanced prompt to ensure ALL items are caught and matched to inventory
-    prompt = f"""
-    You are a Kitchen Inventory Manager.
-    
-    MENU TO PREPARE:
-    "{menu}"
-    
-    YOUR CURRENT PANTRY INVENTORY:
-    "{inventory_list}"
-    
-    TASK:
-    1. Extract EVERY ingredient required for EACH course in the menu (Appetizers, Mains, Sides, Desserts, etc.).
-    2. Estimate total quantity needed for {customers} guests.
-    3. IMPORTANT: If an ingredient exists in the PANTRY INVENTORY list above, use THAT EXACT NAME (e.g., if Pantry has 'Tomato', do NOT use 'Tomatoes').
-    4. If an item is not in the pantry, use a standard name.
-    
-    Return JSON format:
-    {{'ingredients': [{{ 'item_name': 'Exact Pantry Name', 'quantity': 0.5 }}]}}
-    """
-    try: return json.loads(client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0, response_format={"type": "json_object"}).choices[0].message.content)
+            temperature=0, # Zero temp forces it to be logical, not creative
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
     except Exception as e: return {"error": str(e)}
-
 # Getting family schedule
 def get_family_schedule():
     """Fetches family members sorted by who leaves home earliest."""
@@ -376,3 +344,90 @@ def suggest_leftover_recipe(leftover_item, language="English"):
             temperature=0.7
         ).choices[0].message.content
     except Exception as e: return str(e)
+
+# --- FAMILY MANAGEMENT HELPERS (NEW) ---
+
+def update_family_member(member_id, name, role, health, leave_time, pack_lunch):
+    """Updates an existing family member's details."""
+    return execute_query(
+        """UPDATE TBL_FAMILY_MEMBERS 
+           SET Name=%s, Role=%s, Health_Condition=%s, Leave_Time=%s, Needs_Packed_Lunch=%s 
+           WHERE Member_ID=%s""",
+        (name, role, health, leave_time, pack_lunch, member_id)
+    )
+
+def delete_family_member(member_id):
+    """Permanently removes a family member."""
+    return execute_query("DELETE FROM TBL_FAMILY_MEMBERS WHERE Member_ID=%s", (member_id,))
+# --- STEP 3: EXECUTE COOKING (NEW) ---
+
+def process_meal_deduction(selected_meals_list):
+    """
+    Processes selected meals.
+    Handles ID -1 as automatically 'Missing'.
+    """
+    conn = get_db_connection()
+    if not conn: return {"success": False, "error": "DB Connection Failed"}
+    
+    report = []   # What we successfully deducted
+    missing = []  # What we don't have (ID -1 or Low Stock)
+    
+    try:
+        cursor = conn.cursor()
+        
+        # 1. Aggregate needs
+        # We separate 'known_items' (ID > 0) from 'unknown_items' (ID == -1)
+        needed_inventory = {} # {id: qty}
+        
+        for meal in selected_meals_list:
+            ingredients = meal.get('ingredients', [])
+            for ing in ingredients:
+                i_id = int(ing.get('id', -1))
+                qty = float(ing.get('qty', 0))
+                name = ing.get('name', 'Unknown')
+                unit = ing.get('unit', '')
+                
+                if i_id == -1:
+                    # AI says we don't own this at all
+                    missing.append(f"❌ {name} (Not in Pantry): Need {qty} {unit}")
+                elif i_id > 0 and qty > 0:
+                    needed_inventory[i_id] = needed_inventory.get(i_id, 0) + qty
+
+        # 2. Process Known Inventory Items
+        for i_id, needed_qty in needed_inventory.items():
+            # Check Stock
+            cursor.execute("SELECT Item_Name, Standard_Unit, Current_Quantity FROM TBL_PANTRY_STOCK s JOIN TBL_ITEM_CATALOG c ON s.Item_ID = c.Item_ID WHERE s.Item_ID = %s", (i_id,))
+            res = cursor.fetchone()
+            
+            if res:
+                item_name, unit, current_stock = res
+                current_stock = float(current_stock)
+                
+                if current_stock >= needed_qty:
+                    # SUCCESS: Deduct
+                    new_qty = current_stock - needed_qty
+                    if new_qty == 0:
+                        cursor.execute("DELETE FROM TBL_PANTRY_STOCK WHERE Item_ID = %s", (i_id,))
+                    else:
+                        cursor.execute("UPDATE TBL_PANTRY_STOCK SET Current_Quantity = %s WHERE Item_ID = %s", (new_qty, i_id))
+                    
+                    # Log
+                    cursor.execute("INSERT INTO TBL_LOGS (Item_ID, Action_Type, Quantity, Vendor_Name) VALUES (%s, 'CONSUME', %s, 'Chef AI')", (i_id, needed_qty))
+                    
+                    report.append(f"✅ Deducted {needed_qty} {unit} of {item_name}")
+                else:
+                    # PARTIAL / LOW STOCK
+                    missing.append(f"⚠️ {item_name}: Need {needed_qty} {unit}, but only have {current_stock}")
+            else:
+                # ID exists in plan but not in stock table (Zombie ID?)
+                missing.append(f"❌ Item ID {i_id} not found in Stock.")
+
+        conn.commit()
+        return {"success": True, "report": report, "missing": missing}
+
+    except Exception as e:
+        conn.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        if cursor: cursor.close()
+        conn.close()

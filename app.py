@@ -5,9 +5,10 @@ import time
 from datetime import datetime
 from backend_logic import (
     fetch_data, execute_query, get_db_connection, scan_bill_with_groq, 
-    get_ai_item_details, 
-    seed_historical_data, get_item_forecast,
-    get_footfall_forecast
+    get_ai_item_details, seed_historical_data, get_item_forecast,
+    get_footfall_forecast,
+    update_family_member, delete_family_member,
+    process_meal_deduction
 )
 
 # --- PAGE CONFIG ---
@@ -222,60 +223,140 @@ if choice == "Dashboard":
     except Exception as e: st.error(f"⚠️ Dashboard Error: {e}")
 
 #2. Family setup
+# 2. FAMILY CONFIGURATION (IMPROVED)
 elif choice == "Family Setup":
     st.title("🏡 Family Configuration")
-    st.markdown("Set up your family members and their schedules once.")
-    
-    # Fetch existing members
-    members = fetch_data("""
+    st.markdown("Manage your family members and their schedules.")
+
+    # Create Tabs for better organization
+    tab1, tab2 = st.tabs(["📋 Member List & Add New", "✏️ Edit & Delete"])
+
+    # --- TAB 1: VIEW & ADD ---
+    with tab1:
+        # Fetch existing members
+        members = fetch_data("""
             SELECT Member_ID, Name, Role, Health_Condition, 
                 DATE_FORMAT(Leave_Time, '%H:%i') as Leave_Time, 
                 Needs_Packed_Lunch 
             FROM TBL_FAMILY_MEMBERS 
             ORDER BY Leave_Time ASC
         """)
-    
-    # --- MISSING PART ADDED BELOW ---
-    if not members.empty:
-        st.subheader("Current Family Members")
-        st.dataframe(members, width=1000)
-    else:
-        st.info("No family members added yet.")
-    # --------------------------------
-    
-    st.divider()
-    st.subheader("Add New Member")
+        
+        if not members.empty:
+            st.dataframe(members, use_container_width=True)
+        else:
+            st.info("No family members added yet.")
 
-    
-    with st.form("add_member_form"):
-        c1, c2 = st.columns(2)
-        name = c1.text_input("Name (e.g., Rohan)")
-        role = c2.selectbox("Role", ["Father", "Mother", "Grandparent", "Son", "Daughter", "House Help"])
+        st.divider()
+        st.subheader("Add New Member")
         
-        c3, c4 = st.columns(2)
-        health = c3.selectbox("Health Condition", ["None", "Diabetes", "High BP", "Cholesterol", "Allergy"])
-        pack_lunch = c4.checkbox("Needs Packed Lunch?")
-        
-        c5, c6 = st.columns(2)
-        # Use simple text for time to avoid complexity, or strict time input
-        leave_time = c5.time_input("Leaves Home At (Leave empty if stays home)", value=None)
-        
-        if st.form_submit_button("Save Member"):
-            l_time_str = leave_time.strftime('%H:%M:%S') if leave_time else None
+        with st.form("add_member_form"):
+            c1, c2 = st.columns(2)
+            name = c1.text_input("Name (e.g., Rohan)")
+            role = c2.selectbox("Role", ["Father", "Mother", "Grandparent", "Son", "Daughter", "House Help"])
             
-            # --- UPDATED CODE START ---
-            success, message = execute_query(
-                "INSERT INTO TBL_FAMILY_MEMBERS (Name, Role, Health_Condition, Leave_Time, Needs_Packed_Lunch) VALUES (%s, %s, %s, %s, %s)",
-                (name, role, health, l_time_str, pack_lunch)
-            )
+            c3, c4 = st.columns(2)
+            health = c3.selectbox("Health Condition", ["None", "Diabetes", "High BP", "Cholesterol", "Allergy"])
+            pack_lunch = c4.checkbox("Needs Packed Lunch?")
             
-            if success:
-                st.success(f"✅ {name} added to family!")
-                time.sleep(1) # Give a moment to read the message
-                st.rerun()
+            c5, c6 = st.columns(2)
+            leave_time = c5.time_input("Leaves Home At (Leave empty if stays home)", value=None)
+            
+            if st.form_submit_button("Save Member", type="primary"):
+                l_time_str = leave_time.strftime('%H:%M:%S') if leave_time else None
+                
+                success, message = execute_query(
+                    "INSERT INTO TBL_FAMILY_MEMBERS (Name, Role, Health_Condition, Leave_Time, Needs_Packed_Lunch) VALUES (%s, %s, %s, %s, %s)",
+                    (name, role, health, l_time_str, pack_lunch)
+                )
+                
+                if success:
+                    st.success(f"✅ {name} added to family!")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error(f"❌ Database Error: {message}")
+
+    # --- TAB 2: EDIT & DELETE ---
+# --- TAB 2: EDIT & DELETE ---
+    with tab2:
+        st.subheader("Modify Existing Member")
+        
+        # reload members to ensure list is fresh
+        members_refresh = fetch_data("SELECT Member_ID, Name FROM TBL_FAMILY_MEMBERS ORDER BY Name")
+        
+        if members_refresh.empty:
+            st.warning("No members to edit. Go to the 'Add New' tab first.")
+        else:
+            # 1. Select Member
+            member_names = members_refresh['Name'].tolist()
+            selected_name = st.selectbox("Select Person to Edit", member_names)
+            
+            # CRITICAL FIX: Ensure ID is a standard Python int, not a Numpy int
+            raw_id = members_refresh[members_refresh['Name'] == selected_name].iloc[0]['Member_ID']
+            selected_id = int(raw_id)
+            
+            # 2. Fetch Current Details for this person
+            details_df = fetch_data("SELECT * FROM TBL_FAMILY_MEMBERS WHERE Member_ID = %s", (selected_id,))
+            
+            if not details_df.empty:
+                curr = details_df.iloc[0]
+                
+                # Parse existing time
+                current_time_val = None
+                if pd.notnull(curr['Leave_Time']):
+                    try:
+                        # Handle timedelta (e.g., 07:30:00)
+                        seconds = curr['Leave_Time'].total_seconds()
+                        current_time_val = (datetime.min + timedelta(seconds=seconds)).time()
+                    except:
+                        try:
+                            # Handle string format
+                            current_time_val = datetime.strptime(str(curr['Leave_Time']), "%H:%M:%S").time()
+                        except:
+                            current_time_val = None
+
+                # 3. Edit Form
+                with st.form("edit_member_form"):
+                    ec1, ec2 = st.columns(2)
+                    new_name = ec1.text_input("Name", value=curr['Name'])
+                    
+                    # Handle Role Index
+                    roles = ["Father", "Mother", "Grandparent", "Son", "Daughter", "House Help"]
+                    role_idx = roles.index(curr['Role']) if curr['Role'] in roles else 0
+                    new_role = ec2.selectbox("Role", roles, index=role_idx)
+                    
+                    ec3, ec4 = st.columns(2)
+                    # Handle Health Index
+                    healths = ["None", "Diabetes", "High BP", "Cholesterol", "Allergy"]
+                    h_idx = healths.index(curr['Health_Condition']) if curr['Health_Condition'] in healths else 0
+                    new_health = ec3.selectbox("Health Condition", healths, index=h_idx)
+                    
+                    # Checkbox
+                    new_pack_lunch = ec4.checkbox("Needs Packed Lunch?", value=bool(curr['Needs_Packed_Lunch']))
+                    
+                    ec5, ec6 = st.columns(2)
+                    new_leave_time = ec5.time_input("Leaves Home At", value=current_time_val)
+
+                    st.markdown("---")
+                    col_update, col_delete = st.columns([1, 1])
+                    
+                    with col_update:
+                        if st.form_submit_button("💾 Update Details"):
+                            l_time_str = new_leave_time.strftime('%H:%M:%S') if new_leave_time else None
+                            update_family_member(selected_id, new_name, new_role, new_health, l_time_str, new_pack_lunch)
+                            st.success("Updated successfully!")
+                            time.sleep(1)
+                            st.rerun()
+
+                    with col_delete:
+                        if st.form_submit_button("🗑️ Delete Member", type="primary"):
+                            delete_family_member(selected_id)
+                            st.warning(f"Deleted {selected_name}.")
+                            time.sleep(1)
+                            st.rerun()
             else:
-                st.error(f"❌ Database Error: {message}")
-            # --- UPDATED CODE END ---
+                st.error("Could not fetch details. Please check database connection.")
 
 # 3. Morning Rush
 elif choice == "Morning Rush":
@@ -283,7 +364,7 @@ elif choice == "Morning Rush":
     st.markdown("Plan breakfast and lunch boxes based on who leaves first.")
     
     # 1. Imports needed just for this block
-    from backend_logic import get_family_schedule, generate_morning_plan
+    from backend_logic import get_family_schedule, generate_morning_plan, process_meal_deduction
     
     # 2. Context Inputs
     col1, col2 = st.columns(2)
@@ -309,18 +390,108 @@ elif choice == "Morning Rush":
         st.divider()
 
         # 4. Generate AI Plan
+# 4. Generate AI Plan
         if st.button("✨ Create Cooking Plan", type="primary"):
-            stock = get_stock_status()
-            if stock.empty:
-                st.error("Pantry is empty! Add items in Catalog first.")
-            else:
-                stock_str = ", ".join([f"{r['Item_Name']} ({r['Current_Quantity']} {r['Standard_Unit']})" for _, r in stock.iterrows()])
-                
-                with st.spinner("🤖 Thinking... (Checking Inventory & Schedule)"):
-                    plan = generate_morning_plan(stock_str, family, guest_count, lang)
-                    st.markdown("### 🍳 Your Morning Plan")
-                    st.markdown(plan)
+            
+            # --- DEBUG START: Check what the AI actually sees ---
+            # (You can remove this block later once it works)
+            from backend_logic import get_inventory_with_ids
+            raw_inv = get_inventory_with_ids()
+            with st.expander("🕵️ Debug: What is in the Pantry?"):
+                st.text(raw_inv)
+            # --- DEBUG END ---
 
+            with st.spinner("🤖 Chef AI is matching recipes to your specific inventory..."):
+                plan_json = generate_morning_plan(family, guest_count, lang)
+                
+                if "error" in plan_json:
+                    st.error(f"AI Error: {plan_json['error']}")
+                else:
+                    st.session_state['generated_plan'] = plan_json
+                    st.rerun()
+
+    # 5. Display the Plan (If it exists in session state)
+    if 'generated_plan' in st.session_state:
+        plan_data = st.session_state['generated_plan']
+        st.divider()
+        st.subheader("🍳 Select Meals to Cook")
+        
+        # START OF FORM - CRITICAL INDENTATION
+        with st.form("meal_selection_form"):
+            selections = {}
+            
+            for person in plan_data.get('plan', []):
+                st.markdown(f"### 👤 {person['member_name']}")
+                
+                for meal in person.get('meals', []):
+                    st.write(f"**{meal['type']}**")
+                    
+                    # Create radio options for Dish A vs Dish B
+                    options = meal.get('options', [])
+                    opt_names = [f"{opt['dish_name']} ({opt['calories']} cal, {opt['protein']})" for opt in options]
+                    opt_names.append("❌ Skip / Eating Out")
+                    
+                    choice = st.radio(
+                        f"Choose for {person['member_name']} ({meal['type']})", 
+                        opt_names, 
+                        key=f"{person['member_name']}_{meal['type']}"
+                    )
+                    
+                    # Store the selected object for processing later
+                    if "Skip" not in choice:
+                        idx = opt_names.index(choice)
+                        selected_dish_obj = options[idx]
+                        selections[f"{person['member_name']}_{meal['type']}"] = selected_dish_obj
+                
+                st.divider()
+            
+            # THE SUBMIT BUTTON - MUST BE INDENTED INSIDE 'with st.form'
+# THE COOK BUTTON
+            submitted = st.form_submit_button("🔥 Cook Selected Meals & Deduct Inventory", type="primary")
+            
+            if submitted:
+                meals_to_cook = []
+                summary_text = []
+                
+                # 1. Gather Selections
+                for key, selected_obj in selections.items():
+                    meals_to_cook.append(selected_obj)
+                    # Create a nice summary string e.g. "Rohan (Breakfast): Masala Oats"
+                    person_name = key.split('_')[0]
+                    meal_type = key.split('_')[1]
+                    summary_text.append(f"**{person_name}** ({meal_type}): {selected_obj['dish_name']}")
+                
+                if not meals_to_cook:
+                    st.warning("⚠️ No meals selected!")
+                else:
+                    # 2. Show Summary of what we are trying to cook
+                    st.info("👨‍🍳 **Cooking:** " + "  |  ".join(summary_text))
+                    
+                    # 3. Call Backend
+                    with st.spinner("🍳 Checking Pantry & Deducting Stock..."):
+                        result = process_meal_deduction(meals_to_cook)
+                    
+                    # 4. Show Report
+                    if result.get("success"):
+                        c1, c2 = st.columns(2)
+                        
+                        with c1:
+                            st.subheader("✅ Inventory Used")
+                            if result["report"]:
+                                for line in result["report"]:
+                                    st.success(line)
+                            else:
+                                st.write("No pantry items were deducted.")
+                                
+                        with c2:
+                            st.subheader("🛒 Missing / Low Stock")
+                            if result["missing"]:
+                                for line in result["missing"]:
+                                    st.error(line)
+                            else:
+                                st.write("All ingredients were available!")
+                    else:
+                        st.error(f"Database Error: {result.get('error')}")
 # 4. Leftover Wizard
 elif choice == "Leftover Wizard":
     st.title("♻️ Leftover Wizard")
