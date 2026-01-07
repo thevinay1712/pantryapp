@@ -55,14 +55,14 @@ The system relies on a relational database structure designed to ensure data int
 ```bash
 git clone [https://github.com/thevinay1712/pantryapp.git](https://github.com/thevinay1712/pantryapp.git)
 cd pantryapp
-
+```
 2. Install Dependencies
-Bash
+```Bash
 
 pip install -r requirements.txt
-
+```
 3. Environment Configuration
-
+```
 Create a .env file in the root directory with the following credentials:
 Ini, TOML
 
@@ -71,9 +71,9 @@ DB_USER=root
 DB_PASSWORD=your_password
 DB_NAME=aahar_sathi_db
 GROQ_API_KEY=your_groq_api_key
-
+```
 4. Database Initialization
-
+```
 Before running the application, ensure the MySQL service is running. The application includes an automated setup script.
 
     Run the provided reset script or manually execute setup.sql in your MySQL client to create the necessary tables.
@@ -83,14 +83,14 @@ Before running the application, ensure the MySQL service is running. The applica
         Username: admin
 
         Password: password123
-
-How to Run the Application
-
+```
+5. How to Run the Application
 Once the database is initialized and dependencies are installed, execute the following command in your terminal:
+```
 Bash
 
 streamlit run app.py
-
+```
 The application will launch in your default web browser at http://localhost:8501.
 Usage Guidelines
 
