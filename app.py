@@ -21,47 +21,69 @@ st.set_page_config(
 )
 
 # --- CUSTOM CSS & THEME HANDLING ---
-def load_custom_css(is_dark_mode):
-    bg_color = "#0e1117" if is_dark_mode else "#ffffff"
-    card_bg = "#262730" if is_dark_mode else "#f0f2f6"
-    
-    st.markdown(f"""
+def load_custom_css():
+    st.markdown("""
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap');
+        /* 1. IMPORT FONTS */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
         
-        html, body, [class*="css"] {{
+        html, body, [class*="css"] {
             font-family: 'Inter', sans-serif;
-        }}
+            background-color: #0e1117; 
+        }
+
+        /* 2. GLASSMORPHISM CARD */
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s ease-in-out;
+        }
         
-        h1, h2, h3 {{
-            font-weight: 600;
-            letter-spacing: -0.5px;
-        }}
+        .glass-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(79, 172, 254, 0.4);
+        }
+
+        /* 3. METRIC TEXT STYLING */
+        .metric-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #4facfe;
+        }
         
-        /* Metric Cards Styling */
-        div[data-testid="stMetric"] {{
-            background-color: {card_bg};
+        .metric-label {
+            font-size: 14px;
+            color: #a0a0a0;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* 4. CUSTOM BUTTONS */
+        div.stButton > button {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            border: none;
+            padding: 0.6rem 1.2rem;
             border-radius: 8px;
-            padding: 15px;
-            border: 1px solid rgba(128, 128, 128, 0.2);
-        }}
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        div.stButton > button:hover {
+            box-shadow: 0 0 15px rgba(79, 172, 254, 0.5);
+            transform: scale(1.02);
+        }
         
-        /* Dataframe Headers */
-        th {{
-            background-color: {card_bg} !important;
-            font-weight: 600 !important;
-        }}
-        
-        /* Navigation Sidebar */
-        section[data-testid="stSidebar"] {{
-            background-color: {card_bg};
-        }}
-        
-        /* Buttons */
-        div.stButton > button:first-child {{
-            border-radius: 6px;
-            font-weight: 500;
-        }}
+        /* 5. SIDEBAR CLEANUP */
+        section[data-testid="stSidebar"] {
+            background-color: #0e1117;
+            border-right: 1px solid rgba(255, 255, 255, 0.05);
+        }
         </style>
     """, unsafe_allow_html=True)
 
@@ -215,63 +237,113 @@ def get_stock_status():
 
 # --- MAIN UI ---
 
-# 1. DASHBOARD
+
+# ... [Keep imports] ... ensure you have: import plotly.express as px
+
 if choice == "Dashboard":
-    st.title("Dashboard")
-    st.markdown("Overview of inventory health and valuation.")
+    # 1. Title & Header
+    st.markdown("""
+        <h1 style='background: linear-gradient(to right, #4facfe, #00f2fe); 
+                   -webkit-background-clip: text; 
+                   -webkit-text-fill-color: transparent; 
+                   font-size: 3rem; font-weight: 700;'>
+            Command Center
+        </h1>
+        <p style='color: #a0a0a0; margin-bottom: 30px;'>Real-time pantry intelligence and valuation.</p>
+    """, unsafe_allow_html=True)
     
     try:
+        # Fetch Data
         df = get_stock_status()
+        
         if df.empty:
-            st.info("ℹ️ Pantry is empty. Add items to get started.")
+            st.info("ℹ️ Pantry is empty. Add items in 'Catalog Entry' to see analytics.")
         else:
+            # --- DATA PREP ---
             df['Last_Updated'] = pd.to_datetime(df['Last_Updated'])
             df['Shelf_Life_Days'] = pd.to_numeric(df['Shelf_Life_Days'], errors='coerce').fillna(7)
             
+            # Freshness Calculation
             now = datetime.now()
             df['Days_Held'] = df['Last_Updated'].apply(lambda x: (now - x).days if pd.notnull(x) else 0)
             df['Days_Remaining'] = df['Shelf_Life_Days'] - df['Days_Held']
             
-            df = df.reset_index(drop=True)
-            df.index = df.index + 1
-
-            critical_items = df[(df['Days_Remaining'] < 3) | (df['Current_Quantity'] < 2)].copy()
-            
+            # Value Calculation
             df['Last_Price'] = pd.to_numeric(df['Last_Price'], errors='coerce').fillna(0)
             df['Current_Quantity'] = pd.to_numeric(df['Current_Quantity'], errors='coerce').fillna(0)
-            total_value = (df['Current_Quantity'] * df['Last_Price']).sum()
+            df['Stock_Value'] = df['Current_Quantity'] * df['Last_Price']
 
+            # Metrics
+            total_value = df['Stock_Value'].sum()
+            low_stock_count = len(df[df['Current_Quantity'] < 2])
+            critical_expiry_count = len(df[df['Days_Remaining'] < 3])
+
+            # --- ROW 1: GLASS CARDS ---
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total SKU Count", len(df))
-            c2.metric("Low Stock Items", len(df[df['Current_Quantity'] < 2]))
-            c3.metric("Critical Expiry", len(df[df['Days_Remaining'] < 3]))
-            c4.metric("Inventory Value", f"₹{total_value:,.2f}", help="Sum of (Qty * Last Price)")
 
-            st.divider()
+            def card(col, label, value, icon, color="#4facfe"):
+                col.markdown(f"""
+                    <div class="glass-card">
+                        <div style="font-size: 24px; margin-bottom: 10px;">{icon}</div>
+                        <div class="metric-value" style="color: {color}">{value}</div>
+                        <div class="metric-label">{label}</div>
+                    </div>
+                """, unsafe_allow_html=True)
 
-            if not critical_items.empty:
-                st.subheader("⚠️ Critical Attention Required")
+            card(c1, "Total Items", len(df), "📦")
+            card(c2, "Low Stock", low_stock_count, "⚠️", color="#FF4B4B" if low_stock_count > 0 else "#4facfe")
+            card(c3, "Expiring Soon", critical_expiry_count, "⏳", color="#FF4B4B" if critical_expiry_count > 0 else "#4facfe")
+            card(c4, "Total Value", f"₹{total_value:,.0f}", "💰")
+
+            # --- ROW 2: INTERACTIVE CHARTS ---
+            st.markdown("<br>", unsafe_allow_html=True)
+            col_chart1, col_chart2 = st.columns(2)
+
+            with col_chart1:
+                st.markdown("### 📊 Stock Value by Category")
+                # Group by Category
+                cat_df = df.groupby('Category')['Stock_Value'].sum().reset_index()
                 
-                def highlight_critical(val):
-                    color = '#FF4B4B' 
-                    return f'color: {color}; font-weight: bold;'
+                # FIX: Use px.pie with 'hole' parameter instead of px.donut
+                fig_pie = px.pie(cat_df, values='Stock_Value', names='Category', hole=0.4, 
+                                 color_discrete_sequence=px.colors.sequential.Bluyl)
+                                 
+                fig_pie.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", 
+                                      font=dict(color="white"), showlegend=False)
+                st.plotly_chart(fig_pie, use_container_width=True)
+
+            with col_chart2:
+                st.markdown("### 📉 Freshness Timeline")
+                # Binning expiry days
+                df['Status'] = df['Days_Remaining'].apply(lambda x: 'Expired' if x < 0 else ('Critical (0-3 days)' if x <= 3 else 'Good'))
+                status_counts = df['Status'].value_counts().reset_index()
+                status_counts.columns = ['Status', 'Count']
                 
-                st.dataframe(
-                    critical_items[['Item_Name', 'Current_Quantity', 'Days_Remaining', 'Category']]
-                    .style
-                    .map(lambda x: highlight_critical(x), subset=['Days_Remaining'])
-                    .format({'Days_Remaining': '{:.1f}'}), 
-                    width="stretch"
-                )
+                fig_bar = px.bar(status_counts, x='Status', y='Count', color='Status',
+                                 color_discrete_map={'Good': '#00C853', 'Critical (0-3 days)': '#FFAB00', 'Expired': '#FF3D00'})
+                fig_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", 
+                                      font=dict(color="white"), xaxis_title="", yaxis_title="Items")
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+            # --- ROW 3: DETAILED INVENTORY ---
+            st.markdown("### 📝 Detailed Inventory")
             
-            st.subheader("Full Inventory Catalog")
+            # Styling the dataframe for "Command Center" look
             st.dataframe(
-                df[['Item_Name', 'Category', 'Current_Quantity', 'Standard_Unit', 'Last_Vendor', 'Last_Price', 'Days_Remaining']], 
+                df[['Item_Name', 'Category', 'Current_Quantity', 'Standard_Unit', 'Days_Remaining', 'Stock_Value']],
                 width="stretch",
-                height=400
+                height=350,
+                column_config={
+                    "Stock_Value": st.column_config.NumberColumn("Value (₹)", format="₹%.2f"),
+                    "Days_Remaining": st.column_config.ProgressColumn(
+                        "Freshness", format="%d days", min_value=0, max_value=15,
+                        help="Red = Expiring Soon"
+                    ),
+                }
             )
-    except Exception as e: st.error(f"⚠️ Dashboard Error: {e}")
 
+    except Exception as e:
+        st.error(f"Dashboard Error: {e}")
 #2. Family setup
 # 2. FAMILY CONFIGURATION (IMPROVED)
 elif choice == "Family Setup":
