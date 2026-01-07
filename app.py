@@ -7,7 +7,8 @@ from backend_logic import (
     fetch_data, execute_query, get_db_connection, scan_bill_with_groq, 
     get_ai_item_details, seed_historical_data, get_item_forecast,
     get_footfall_forecast,
-    update_family_member, delete_family_member 
+    update_family_member, delete_family_member,
+    process_meal_deduction
 )
 
 # --- PAGE CONFIG ---
@@ -363,7 +364,7 @@ elif choice == "Morning Rush":
     st.markdown("Plan breakfast and lunch boxes based on who leaves first.")
     
     # 1. Imports needed just for this block
-    from backend_logic import get_family_schedule, generate_morning_plan
+    from backend_logic import get_family_schedule, generate_morning_plan, process_meal_deduction
     
     # 2. Context Inputs
     col1, col2 = st.columns(2)
@@ -390,17 +391,97 @@ elif choice == "Morning Rush":
 
         # 4. Generate AI Plan
         if st.button("✨ Create Cooking Plan", type="primary"):
-            stock = get_stock_status()
-            if stock.empty:
-                st.error("Pantry is empty! Add items in Catalog first.")
-            else:
-                stock_str = ", ".join([f"{r['Item_Name']} ({r['Current_Quantity']} {r['Standard_Unit']})" for _, r in stock.iterrows()])
+            with st.spinner("🤖 Chef AI is analyzing inventory & nutrition..."):
+                plan_json = generate_morning_plan(family, guest_count, lang)
                 
-                with st.spinner("🤖 Thinking... (Checking Inventory & Schedule)"):
-                    plan = generate_morning_plan(stock_str, family, guest_count, lang)
-                    st.markdown("### 🍳 Your Morning Plan")
-                    st.markdown(plan)
+                if "error" in plan_json:
+                    st.error(f"AI Error: {plan_json['error']}")
+                else:
+                    st.session_state['generated_plan'] = plan_json
+                    st.rerun()
 
+    # 5. Display the Plan (If it exists in session state)
+    if 'generated_plan' in st.session_state:
+        plan_data = st.session_state['generated_plan']
+        st.divider()
+        st.subheader("🍳 Select Meals to Cook")
+        
+        # START OF FORM - CRITICAL INDENTATION
+        with st.form("meal_selection_form"):
+            selections = {}
+            
+            for person in plan_data.get('plan', []):
+                st.markdown(f"### 👤 {person['member_name']}")
+                
+                for meal in person.get('meals', []):
+                    st.write(f"**{meal['type']}**")
+                    
+                    # Create radio options for Dish A vs Dish B
+                    options = meal.get('options', [])
+                    opt_names = [f"{opt['dish_name']} ({opt['calories']} cal, {opt['protein']})" for opt in options]
+                    opt_names.append("❌ Skip / Eating Out")
+                    
+                    choice = st.radio(
+                        f"Choose for {person['member_name']} ({meal['type']})", 
+                        opt_names, 
+                        key=f"{person['member_name']}_{meal['type']}"
+                    )
+                    
+                    # Store the selected object for processing later
+                    if "Skip" not in choice:
+                        idx = opt_names.index(choice)
+                        selected_dish_obj = options[idx]
+                        selections[f"{person['member_name']}_{meal['type']}"] = selected_dish_obj
+                
+                st.divider()
+            
+            # THE SUBMIT BUTTON - MUST BE INDENTED INSIDE 'with st.form'
+# THE COOK BUTTON
+            submitted = st.form_submit_button("🔥 Cook Selected Meals & Deduct Inventory", type="primary")
+            
+            if submitted:
+                meals_to_cook = []
+                summary_text = []
+                
+                # 1. Gather Selections
+                for key, selected_obj in selections.items():
+                    meals_to_cook.append(selected_obj)
+                    # Create a nice summary string e.g. "Rohan (Breakfast): Masala Oats"
+                    person_name = key.split('_')[0]
+                    meal_type = key.split('_')[1]
+                    summary_text.append(f"**{person_name}** ({meal_type}): {selected_obj['dish_name']}")
+                
+                if not meals_to_cook:
+                    st.warning("⚠️ No meals selected!")
+                else:
+                    # 2. Show Summary of what we are trying to cook
+                    st.info("👨‍🍳 **Cooking:** " + "  |  ".join(summary_text))
+                    
+                    # 3. Call Backend
+                    with st.spinner("🍳 Checking Pantry & Deducting Stock..."):
+                        result = process_meal_deduction(meals_to_cook)
+                    
+                    # 4. Show Report
+                    if result.get("success"):
+                        c1, c2 = st.columns(2)
+                        
+                        with c1:
+                            st.subheader("✅ Inventory Used")
+                            if result["report"]:
+                                for line in result["report"]:
+                                    st.success(line)
+                            else:
+                                st.write("No pantry items were deducted.")
+                                
+                        with c2:
+                            st.subheader("🛒 Missing / Low Stock")
+                            if result["missing"]:
+                                for line in result["missing"]:
+                                    st.error(line)
+                            else:
+                                st.write("All ingredients were available!")
+                    else:
+                        st.error(f"Database Error: {result.get('error')}")
 # 4. Leftover Wizard
 elif choice == "Leftover Wizard":
     st.title("♻️ Leftover Wizard")
