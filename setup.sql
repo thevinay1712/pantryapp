@@ -1,4 +1,4 @@
--- setup.sql (VERSION 2: SMART HOME EDITION)
+-- setup.sql (VERSION 3: WITH USER SECURITY)
 
 -- 1. CLEANUP
 SET FOREIGN_KEY_CHECKS = 0;
@@ -9,6 +9,7 @@ DROP TABLE IF EXISTS TBL_PANTRY_STOCK;
 DROP TABLE IF EXISTS TBL_LOGS;
 DROP TABLE IF EXISTS TBL_ITEM_CATALOG;
 DROP TABLE IF EXISTS TBL_VENDOR;
+DROP TABLE IF EXISTS TBL_USERS; -- NEW: Cleanup Users table
 -- Dropping old commercial tables
 DROP TABLE IF EXISTS TBL_CHEF_PROFILE; 
 DROP TABLE IF EXISTS TBL_FOOTFALL;
@@ -23,6 +24,16 @@ CREATE TABLE TBL_ITEM_CATALOG (
     Shelf_Life_Days INT DEFAULT 7,
     Last_Vendor VARCHAR(100),
     Last_Price DECIMAL(10,2)
+);
+
+-- NEW: User Management Table
+CREATE TABLE TBL_USERS (
+    User_ID INT AUTO_INCREMENT PRIMARY KEY,
+    Username VARCHAR(50) UNIQUE NOT NULL,
+    Password_Hash VARCHAR(64) NOT NULL,
+    Full_Name VARCHAR(100),
+    Role VARCHAR(20) DEFAULT 'User',
+    Created_At DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 -- NEW: Family Configuration
@@ -80,3 +91,8 @@ INSERT INTO TBL_ITEM_CATALOG (Item_Name, Category, Standard_Unit, Shelf_Life_Day
 ('Idli Rice', 'Grains', 'kg', 180),
 ('Urad Dal', 'Grains', 'kg', 180),
 ('Tomato', 'Vegetable', 'kg', 5);
+
+-- Default Admin User (Password: password123)
+-- SHA256 Hash for 'password123': ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f
+INSERT INTO TBL_USERS (Username, Password_Hash, Full_Name, Role) VALUES 
+('admin', 'ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f', 'System Administrator', 'Admin');
